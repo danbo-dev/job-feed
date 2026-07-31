@@ -36,7 +36,14 @@ jobs:
       - name: Install dependencies
         run: pip install --quiet beautifulsoup4
 
+      # Secrets are NOT ambient - every one has to be mapped explicitly here.
+      # Without COMP_FLOOR/COMP_TARGET the sweep silently falls back to the
+      # placeholder 0 thresholds in config.json, which marks every salary as
+      # clearing target and demotes nothing.
       - name: Run the sweep
+        env:
+          COMP_FLOOR: ${{ secrets.COMP_FLOOR }}
+          COMP_TARGET: ${{ secrets.COMP_TARGET }}
         run: |
           if [ "${{ inputs.first_run }}" = "true" ]; then
             python3 scripts/find_jobs.py --first-run
@@ -69,6 +76,8 @@ jobs:
 
       - name: Email the report
         env:
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
         run: python3 scripts/notify_email.py
 
