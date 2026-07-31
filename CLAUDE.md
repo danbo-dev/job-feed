@@ -17,7 +17,7 @@ employer, or salary figure.
 | Secret | Falls back to |
 |---|---|
 | `EMAIL_TO`, `EMAIL_FROM` | `config.email.*` (empty here) |
-| `EMAIL_PASSWORD` | none — **Dan must set this**; until then delivery is skipped |
+| `EMAIL_PASSWORD` | none. Must be a Gmail **app password** — the account password is rejected with `534 5.7.9 Application-specific password required` |
 | `COMP_FLOOR`, `COMP_TARGET` | `config.candidate.*` (0 placeholders here) |
 
 Everything else — paths, keywords, boards, filters, weights — is in `config.json`
@@ -32,14 +32,32 @@ and safe to edit in the open.
 - Committing the hashed `seen.json` daily also keeps the repo "active", which stops
   GitHub disabling the schedule after 60 days of inactivity.
 
-## Verified 2026-07-31
+## Verified end-to-end 2026-07-31
 
-- LinkedIn's guest API **works from GitHub runners** — 847 raw postings. This was
+Full pipeline confirmed working: **12 new roles swept, scored, emailed, received.**
+
+- LinkedIn's guest API **works from GitHub runners** — 945 raw postings. This was
   the main unknown when moving to cloud.
-- Dedupe survives across runs: `seen.json` went 46 → 48 → 49 over two back-to-back
-  runs each scanning ~7,700 postings. Broken state would have re-reported all 48.
+- Email delivers and renders — checked in the actual Gmail inbox, not just the
+  send log.
+- Comp thresholds apply correctly: ⚠️ at $150–175K, ✅ at $142.6–297.2K,
+  ❌ at $85.6–115.6K.
+- Travel ceiling fires: three EY roles flagged "up to 60% ⚠️ over your 50%
+  ceiling" and demoted to 6.0/5.2.
+- Dedupe survives across runs (`5 already seen` on this run).
 - `degraded` flag fires when LinkedIn returns 0 while boards return results, so a
   blocked source never reads as a quiet day.
+
+### Two bugs found by testing, worth not repeating
+
+1. **GitHub secrets are not ambient.** Only secrets listed in a step's `env:`
+   block reach the process. `EMAIL_TO` and `COMP_FLOOR`/`COMP_TARGET` were set but
+   unmapped, so the mailer aborted with "no recipient" and the sweep scored against
+   placeholder `0` thresholds — marking every salary as clearing target.
+2. **State must not advance on failed delivery.** Runs committed `seen.json` even
+   when the email failed, marking roles seen that Dan never received; four were
+   lost that way. `notify_email.py` now writes `data/delivered.flag` on success
+   only, and the commit step skips `seen.json` without it.
 
 ## Gotchas
 
