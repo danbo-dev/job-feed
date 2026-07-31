@@ -6,3 +6,4 @@ data/preview.html
 .env.local
 .DS_Store
 *.tmp
+delivered.flag

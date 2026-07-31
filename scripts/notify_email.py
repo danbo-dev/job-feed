@@ -15,7 +15,9 @@ Usage:
     python3 notify_email.py --dry-run  # render to data/preview.html, send nothing
 
 Never fails the build: if email is unconfigured or SMTP errors, it logs and exits 0.
-The sweep result is already committed by then and matters more than the delivery.
+On a successful send it writes data/delivered.flag, which the workflow uses to
+decide whether committing the dedupe state is safe. Without delivery the state
+must NOT advance, or roles get marked seen that Dan never saw.
 """
 
 import argparse
@@ -34,6 +36,19 @@ CONFIG_PATH = os.path.join(ROOT, "config.json")
 LAST_RUN = os.path.join(ROOT, "data", "last_run.json")
 
 SUBJECT_PREFIX = "[Job Feed]"
+DELIVERED_FLAG = os.path.join(ROOT, "data", "delivered.flag")
+
+
+def mark_delivered():
+    """Signal to the workflow that the report actually reached Dan.
+
+    The dedupe state must only be committed when delivery succeeded. Otherwise a
+    broken mailer silently marks roles as seen and he never hears about them -
+    which is exactly what happened on 2026-07-31 before this existed.
+    """
+    with open(DELIVERED_FLAG, "w") as f:
+        f.write("ok\n")
+
 
 INK = "#1f2933"
 MUTED = "#6b7280"
@@ -191,6 +206,9 @@ def main():
                     help="render to data/preview.html and send nothing")
     args = ap.parse_args()
 
+    if os.path.exists(DELIVERED_FLAG):
+        os.remove(DELIVERED_FLAG)
+
     with open(CONFIG_PATH) as f:
         cfg = json.load(f)
     email_cfg = cfg.get("email", {})
@@ -253,9 +271,13 @@ def main():
             s.login(from_addr, password)
             s.send_message(msg)
         log(f"sent to {to_addr}: {subject}")
+        mark_delivered()
+    except smtplib.SMTPAuthenticationError as exc:
+        log(f"SMTP auth rejected: {exc}")
+        log("Gmail requires an APP PASSWORD, not the account password.")
+        log("  myaccount.google.com -> Security -> 2-Step Verification -> App passwords")
     except Exception as exc:  # noqa: BLE001 - delivery must never fail the run
         log(f"SMTP failed ({type(exc).__name__}): {exc}")
-        log("Sweep results are still saved and committed.")
 
 
 if __name__ == "__main__":

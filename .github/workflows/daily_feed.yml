@@ -81,13 +81,18 @@ jobs:
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
         run: python3 scripts/notify_email.py
 
-      # seen.json is the dedupe state. Without this commit every run would
-      # re-report every job it has already sent.
-      - name: Commit state and report
+      # seen.json is the dedupe state, and it is ONLY safe to commit when the
+      # report actually reached Dan. Committing after a failed send marks roles
+      # as seen that he never saw, and they never resurface.
+      - name: Commit dedupe state
         if: always()
         run: |
+          if [ ! -f data/delivered.flag ]; then
+            echo "::warning::Report was not delivered - leaving dedupe state untouched so these roles resurface next run."
+            exit 0
+          fi
           git config --local user.name "github-actions[bot]"
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/seen.json data/last_run.json reports/ || true
+          git add data/seen.json
           git diff --staged --quiet || git commit -m "Job feed: $(date -u +%Y-%m-%d) [skip ci]"
           git push || true
