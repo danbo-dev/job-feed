@@ -1,0 +1,8 @@
+# Never commit run output to a public repo - reports name every role being tracked.
+# Email is the delivery channel; keep any archive in a private repo.
+reports/
+data/last_run.json
+data/preview.html
+.env.local
+.DS_Store
+*.tmp

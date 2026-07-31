@@ -1,0 +1,697 @@
+#!/usr/bin/env python3
+"""
+Daily job finder.
+
+Sources:
+  1. LinkedIn guest job API (no auth) - broad sweep across keyword x location matrix
+  2. Greenhouse board API - direct from target companies
+  3. Ashby posting API - direct from target companies
+
+Dedupes against data/seen.json so each daily report only shows genuinely new roles.
+Writes a scored markdown report to reports/YYYY-MM-DD.md.
+
+Usage:
+    python3 find_jobs.py              # daily mode (last 24h from LinkedIn)
+    python3 find_jobs.py --first-run  # wider window (14 days), seeds seen.json
+    python3 find_jobs.py --no-salary  # skip salary enrichment (much faster)
+"""
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import sys
+import time
+import urllib.parse
+import urllib.request
+from datetime import datetime, timezone
+
+from bs4 import BeautifulSoup  # html.parser only - avoids an lxml build dependency
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CONFIG_PATH = os.path.join(ROOT, "config.json")
+DATA_DIR = os.path.join(ROOT, "data")
+REPORTS_DIR = os.path.join(ROOT, "reports")
+SEEN_PATH = os.path.join(DATA_DIR, "seen.json")
+
+UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+      "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
+
+
+# ---------------------------------------------------------------- utilities
+
+def log(msg):
+    print(f"  {msg}", file=sys.stderr)
+
+
+def get(url, timeout=25, retries=2):
+    """GET a URL, returning decoded text or None. Never raises."""
+    for attempt in range(retries + 1):
+        try:
+            req = urllib.request.Request(url, headers={
+                "User-Agent": UA,
+                "Accept": "text/html,application/json,application/xhtml+xml,*/*",
+                "Accept-Language": "en-US,en;q=0.9",
+            })
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.read().decode("utf-8", errors="replace")
+        except Exception as exc:  # noqa: BLE001 - a dead source must not kill the run
+            if attempt == retries:
+                log(f"fetch failed ({type(exc).__name__}) {url[:90]}")
+                return None
+            time.sleep(1.5 * (attempt + 1))
+    return None
+
+
+def job_key(company, title, location=None):
+    """Stable identity for a posting across sources (LinkedIn ids churn).
+
+    Location is deliberately excluded: the same req is routinely posted once per
+    eligible state/city, and we only want to show Dan the role once.
+    """
+    raw = f"{norm(company)}|{norm(title)}"
+    return hashlib.sha1(raw.encode()).hexdigest()[:16]
+
+
+def has_word(needle, haystack):
+    """Substring match that respects word boundaries.
+
+    Without this, 'erp' matches 'Enterprise' and 'film' matches 'Thin Films' -
+    both of which put junk at the top of the first report.
+    """
+    if not needle or not haystack:
+        return False
+    pat = r"(?<![a-z0-9])" + re.escape(needle.strip()) + r"(?![a-z0-9])"
+    return re.search(pat, haystack, re.I) is not None
+
+
+def env_int(name, fallback):
+    """Env var wins over config.
+
+    Lets the committed config stay free of personal salary figures: the real
+    thresholds arrive as GitHub secrets at run time.
+    """
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return fallback
+    try:
+        return int(float(raw.replace(",", "").replace("$", "")))
+    except ValueError:
+        log(f"{name}={raw!r} is not a number - using config value {fallback}")
+        return fallback
+
+
+def norm(s):
+    return re.sub(r"[^a-z0-9 ]+", " ", (s or "").lower()).strip()
+
+
+def clean(s):
+    return re.sub(r"\s+", " ", (s or "")).strip()
+
+
+# ---------------------------------------------------------------- sources
+
+def fetch_linkedin(cfg, tpr_seconds):
+    """Sweep the LinkedIn guest API across every keyword x location pair."""
+    jobs = []
+    li = cfg["linkedin"]
+    pairs = []
+    for path_id, path in cfg["paths"].items():
+        for kw in path["keywords"]:
+            for loc in li["locations"]:
+                pairs.append((path_id, kw, loc))
+
+    log(f"LinkedIn: {len(pairs)} keyword x location queries")
+    for i, (path_id, kw, loc) in enumerate(pairs, 1):
+        for page in range(li["max_pages_per_query"]):
+            params = {
+                "keywords": kw,
+                "location": loc["name"],
+                "f_TPR": f"r{tpr_seconds}",
+                "start": page * 25,
+            }
+            if loc.get("remote_filter"):
+                params["f_WT"] = loc["remote_filter"]
+            url = ("https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?"
+                   + urllib.parse.urlencode(params))
+            html = get(url)
+            time.sleep(li["request_delay_seconds"])
+            if not html or "base-card" not in html:
+                break
+
+            soup = BeautifulSoup(html, "html.parser")
+            cards = soup.find_all("div", class_=re.compile("base-card"))
+            if not cards:
+                break
+            for card in cards:
+                t = card.find(["h3"], class_=re.compile("base-search-card__title"))
+                c = card.find(["h4"], class_=re.compile("base-search-card__subtitle"))
+                l = card.find("span", class_=re.compile("job-search-card__location"))
+                a = card.find("a", class_=re.compile("base-card__full-link"))
+                d = card.find("time")
+                if not (t and c):
+                    continue
+                link = a["href"].split("?")[0] if a and a.has_attr("href") else ""
+                jobs.append({
+                    "title": clean(t.get_text()),
+                    "company": clean(c.get_text()),
+                    "location": clean(l.get_text()) if l else "",
+                    "url": link,
+                    "posted": (d.get("datetime") if d else "") or "",
+                    "source": "LinkedIn",
+                    "matched_path": path_id,
+                    "matched_kw": kw,
+                })
+            if len(cards) < 10:
+                break
+        if i % 10 == 0:
+            log(f"  ...{i}/{len(pairs)} queries, {len(jobs)} raw hits")
+    return jobs
+
+
+def fetch_greenhouse(boards):
+    jobs = []
+    for board in boards:
+        raw = get(f"https://boards-api.greenhouse.io/v1/boards/{board}/jobs")
+        if not raw:
+            continue
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        for j in payload.get("jobs", []):
+            jobs.append({
+                "title": clean(j.get("title")),
+                "company": board,
+                "location": clean((j.get("location") or {}).get("name", "")),
+                "url": j.get("absolute_url", ""),
+                "posted": (j.get("updated_at") or "")[:10],
+                "source": "Greenhouse",
+                "matched_path": None,
+                "matched_kw": None,
+            })
+        time.sleep(0.3)
+    return jobs
+
+
+def fetch_ashby(boards):
+    jobs = []
+    for board in boards:
+        raw = get(f"https://api.ashbyhq.com/posting-api/job-board/{board}")
+        if not raw:
+            continue
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        for j in payload.get("jobs", []):
+            jobs.append({
+                "title": clean(j.get("title")),
+                "company": board,
+                "location": clean(j.get("location", "")),
+                "url": j.get("jobUrl", ""),
+                "posted": (j.get("publishedAt") or "")[:10],
+                "source": "Ashby",
+                "matched_path": None,
+                "matched_kw": None,
+            })
+        time.sleep(0.3)
+    return jobs
+
+
+# ---------------------------------------------------------------- filtering
+
+def location_ok(job, cfg):
+    """True if the role is US-remote, in Colorado, or in the Denver metro."""
+    lf = cfg["location_filters"]
+    loc = (job.get("location") or "").lower()
+    title = (job.get("title") or "").lower()
+    blob = f"{loc} {title}"
+
+    if any(m in blob for m in lf["reject_markers"]):
+        return False
+    # Non-US postings frequently say "Remote" too - drop them before that check.
+    if any(has_word(c, loc) for c in lf["reject_countries"]):
+        if not (has_word("colorado", loc) or re.search(r",\s*co\b", loc)):
+            return False
+    if any(m in loc for m in lf["allow_metros"]):
+        return True
+    if has_word("colorado", loc) or re.search(r",\s*co\b", loc):
+        return True
+    if lf["allow_remote"] and is_remote(loc, title, lf):
+        return True
+    return False
+
+
+def is_remote(loc, title, lf):
+    """True only for genuinely location-flexible postings.
+
+    Deliberately strict: "San Mateo, CA, United States" is an onsite role that
+    merely names the country, and treating it as remote floods the report with
+    Bay Area jobs Dan cannot take.
+    """
+    if any(has_word(m, f"{loc} {title}") for m in lf["remote_markers"]):
+        return True
+    bare = re.sub(r"[^a-z ]", " ", loc).strip()
+    bare = re.sub(r"\s+", " ", bare)
+    return bare in {"united states", "us", "usa", "united states of america", "nationwide"}
+
+
+def seniority_ok(job, cfg):
+    t = (job.get("title") or "").lower()
+    return not any(has_word(r, t) for r in cfg["seniority"]["reject"])
+
+
+def classify_path(job, cfg):
+    """Assign a job to the path whose title signals it matches most specifically."""
+    t = (job.get("title") or "").lower()
+    best, best_len = None, 0
+    for path_id, path in cfg["paths"].items():
+        for sig in path["title_signals"]:
+            if has_word(sig, t) and len(sig) > best_len:
+                best, best_len = path_id, len(sig)
+    return best
+
+
+# ---------------------------------------------------------------- scoring
+
+def score(job, cfg):
+    """Score a job against Dan's profile. Returns (score, reasons).
+
+    The path is always re-derived from the title, never taken from the LinkedIn
+    keyword that surfaced it - LinkedIn's matching is fuzzy enough that a search
+    for "SAP Program Manager" returns security engineering roles.
+    """
+    pts, why = 0.0, []
+    title = (job.get("title") or "").lower()
+    company = (job.get("company") or "").lower()
+    loc = (job.get("location") or "").lower()
+
+    path_id = job.get("matched_path")
+    if not path_id or path_id not in cfg["paths"]:
+        return 0.0, ["no path signal in title"]
+
+    path = cfg["paths"][path_id]
+    hits = [s for s in path["title_signals"] if has_word(s, title)]
+    if not hits:
+        return 0.0, ["path signal did not survive word-boundary check"]
+
+    pts += 4 * path["weight"]
+    why.append(f"{path['label']} — “{hits[0].strip()}”")
+
+    if any(has_word(b, title) for b in cfg["seniority"]["boost"]):
+        pts += 1
+        why.append("right seniority")
+
+    db = cfg["domain_bonus"]
+    hit = next((c for c in db["companies"] if has_word(c, company)), None)
+    if hit:
+        pts += 3
+        why.append(f"target company: {hit}")
+    else:
+        tw = next((w for w in db["title_words"] if has_word(w, title)), None)
+        if tw:
+            pts += 1.5
+            why.append(f"domain of interest: {tw}")
+
+    if any(m in loc for m in cfg["location_filters"]["allow_metros"]):
+        pts += 1.5
+        why.append("Denver metro")
+    elif any(has_word(m, f"{loc} {title}") for m in cfg["location_filters"]["remote_markers"]):
+        pts += 1
+        why.append("remote")
+
+    # What Dan can actually prove on paper today, per the 2025 resumes.
+    proof = ["sap", "erp", "s/4hana", "s4hana", "deployment", "warehouse", "wms",
+             "supply chain", "tableau", "sql", "power bi", "readiness", "cutover",
+             "logistics", "distribution", "transformation"]
+    proof_hits = [p for p in proof if has_word(p, title)]
+    if proof_hits:
+        pts += 1.5
+        why.append(f"proven on résumé: {proof_hits[0]}")
+
+    return round(pts, 1), why
+
+
+COMP_CUE = re.compile(
+    r"(salary|compensation|pay range|base pay|pay band|annual|per year|/yr|yearly|USD)",
+    re.I)
+
+RANGE_RE = re.compile(
+    r"\$\s?([\d][\d,]*(?:\.\d+)?)\s?(k\b)?\s*(?:-|–|—|to|and)\s*\$?\s?([\d][\d,]*(?:\.\d+)?)\s?(k\b)?",
+    re.I)
+
+SINGLE_RE = re.compile(
+    r"\$\s?([\d][\d,]*(?:\.\d+)?)\s?(k\b)?", re.I)
+
+
+def _amount(raw, k_flag):
+    try:
+        v = float(raw.replace(",", ""))
+    except ValueError:
+        return None
+    if k_flag:
+        v *= 1000
+    # A bare "150" next to a $ in a comp sentence means $150k.
+    if v < 1000:
+        v *= 1000
+    return int(v) if 40000 <= v <= 900000 else None
+
+
+def extract_salary(text):
+    """Pull an annual salary range out of a job page. Returns (lo, hi).
+
+    Only looks at text near a compensation cue - job posts are full of unrelated
+    dollar figures ("$200M in property", "$2.2MM savings") that otherwise poison
+    the range.
+    """
+    if not text:
+        return None, None
+    text = re.sub(r"\s+", " ", text)
+
+    windows = []
+    for cue in COMP_CUE.finditer(text):
+        windows.append(text[max(0, cue.start() - 200): cue.start() + 300])
+    if not windows:
+        return None, None
+
+    vals = []
+    for w in windows:
+        for m in RANGE_RE.finditer(w):
+            lo = _amount(m.group(1), m.group(2))
+            hi = _amount(m.group(3), m.group(4))
+            if lo and hi and lo <= hi:
+                vals += [lo, hi]
+    if not vals:  # fall back to single figures inside comp windows
+        for w in windows:
+            for m in SINGLE_RE.finditer(w):
+                v = _amount(m.group(1), m.group(2))
+                if v:
+                    vals.append(v)
+    if not vals:
+        return None, None
+    return min(vals), max(vals)
+
+
+TRAVEL_RE = re.compile(r"(\d{1,3})\s?%\s*(?:of\s+the\s+time\s+)?travel|travel[^.]{0,40}?(\d{1,3})\s?%",
+                       re.I)
+
+
+def extract_travel(text):
+    """Highest travel percentage mentioned, or None. Dan's ceiling is 50%."""
+    if not text:
+        return None
+    pcts = []
+    for m in TRAVEL_RE.finditer(text):
+        raw = m.group(1) or m.group(2)
+        try:
+            v = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= v <= 100:
+            pcts.append(v)
+    return max(pcts) if pcts else None
+
+
+def enrich_details(jobs, cfg, limit):
+    """Fetch detail pages for the top N jobs; attach salary range and travel load."""
+    done = 0
+    for job in jobs:
+        if done >= limit:
+            break
+        if not job.get("url"):
+            continue
+        html = get(job["url"], timeout=20, retries=1)
+        time.sleep(0.8)
+        done += 1
+        if not html:
+            continue
+        text = re.sub(r"\s+", " ", BeautifulSoup(html, "html.parser").get_text(" "))
+        lo, hi = extract_salary(text)
+        if lo:
+            job["salary_lo"], job["salary_hi"] = lo, hi
+            job["meets_floor"] = hi is not None and hi >= cfg["candidate"]["comp_floor"]
+        tv = extract_travel(text)
+        if tv is not None:
+            job["travel_pct"] = tv
+    return jobs
+
+
+# ---------------------------------------------------------------- reporting
+
+def money(v):
+    return f"${v:,.0f}" if v else "—"
+
+
+def salary_cell(job, floor, target):
+    lo, hi = job.get("salary_lo"), job.get("salary_hi")
+    if not lo:
+        return "not posted"
+    rng = money(lo) if lo == hi else f"{money(lo)}–{money(hi)}"
+    top = hi or lo
+    if top >= target:
+        return f"{rng} ✅"
+    if top >= floor:
+        return f"{rng} ⚠️"
+    return f"{rng} ❌"
+
+
+def write_report(jobs, cfg, first_run, stats):
+    os.makedirs(REPORTS_DIR, exist_ok=True)
+    today = datetime.now().strftime("%Y-%m-%d")
+    path = os.path.join(REPORTS_DIR, f"{today}.md")
+    # Never clobber an earlier report from the same day - a second run only ever
+    # contains the delta, and silently replacing the morning's list loses it.
+    n = 2
+    while os.path.exists(path):
+        path = os.path.join(REPORTS_DIR, f"{today}-{n}.md")
+        n += 1
+    floor = cfg["candidate"]["comp_floor"]
+    target = cfg["candidate"]["comp_target"]
+    top_n = cfg["report"]["top_n_full_detail"]
+
+    lines = []
+    lines.append(f"# Job feed — {datetime.now().strftime('%A, %B %-d, %Y')}")
+    lines.append("")
+    window = "last 14 days (first run)" if first_run else "last 24 hours"
+    lines.append(f"*{len(jobs)} new roles matched* · window: {window} · "
+                 f"floor {money(floor)} · Denver metro or remote · travel <50%")
+    lines.append("")
+    lines.append(f"<sub>Scanned {stats['raw']} raw postings from LinkedIn + "
+                 f"{stats['boards']} company boards. "
+                 f"{stats['dropped_loc']} dropped on location, "
+                 f"{stats['dropped_sen']} on seniority, "
+                 f"{stats['dropped_seen']} already seen.</sub>")
+    lines.append("")
+
+    # A blocked source and a genuinely quiet day produce the same empty report.
+    # Say which one this is, loudly, or a silent outage reads as good news.
+    if stats.get("degraded"):
+        lines.append("> **⚠️ LinkedIn returned nothing this run.** Every other source "
+                     "worked, so this is almost certainly LinkedIn blocking the "
+                     "runner's IP rather than an empty market. Roughly two-thirds of "
+                     "normal coverage is missing from this report — treat it as "
+                     "partial, not as a quiet day.")
+        lines.append("")
+
+    if not jobs:
+        if stats.get("degraded"):
+            lines.append("No new roles — but see the warning above. This report is "
+                         "not trustworthy as a signal that there was nothing to find.")
+        else:
+            lines.append("Nothing new cleared the bar today. That's normal on a Monday "
+                         "or a holiday week — the sweep still ran and all sources "
+                         "responded.")
+        with open(path, "w") as f:
+            f.write("\n".join(lines))
+        return path, 0
+
+    by_path = {}
+    for j in jobs:
+        by_path.setdefault(j.get("matched_path") or "other", []).append(j)
+
+    lines.append("## Top matches")
+    lines.append("")
+    for j in jobs[:top_n]:
+        label = cfg["paths"].get(j.get("matched_path"), {}).get("label", "Other")
+        lines.append(f"### {j['title']} — {j['company'].title()}")
+        lines.append("")
+        lines.append(f"- **Path:** {label}")
+        lines.append(f"- **Location:** {j['location'] or 'not stated'}")
+        lines.append(f"- **Comp:** {salary_cell(j, floor, target)}")
+        if j.get("travel_pct") is not None:
+            over = " ⚠️ over your 50% ceiling" if j["travel_pct"] > cfg["candidate"]["max_travel_pct"] else ""
+            lines.append(f"- **Travel:** up to {j['travel_pct']}%{over}")
+        lines.append(f"- **Score:** {j['score']} — {', '.join(j['why'][:4])}")
+        lines.append(f"- **Source:** {j['source']}"
+                     + (f" · posted {j['posted'][:10]}" if j.get("posted") else ""))
+        lines.append(f"- **Link:** {j['url']}")
+        lines.append("")
+
+    rest = jobs[top_n:]
+    if rest:
+        lines.append("## Also matched")
+        lines.append("")
+        lines.append("| Score | Role | Company | Location | Comp | Path |")
+        lines.append("|---|---|---|---|---|---|")
+        for j in rest:
+            label = cfg["paths"].get(j.get("matched_path"), {}).get("label", "Other")
+            short = label.split("(")[0].split("/")[0].strip()
+            title = f"[{j['title']}]({j['url']})" if j["url"] else j["title"]
+            lines.append(f"| {j['score']} | {title} | {j['company'].title()} | "
+                         f"{j['location'] or '—'} | {salary_cell(j, floor, target)} | {short} |")
+        lines.append("")
+
+    lines.append("## By path")
+    lines.append("")
+    for path_id, group in sorted(by_path.items(), key=lambda kv: -len(kv[1])):
+        label = cfg["paths"].get(path_id, {}).get("label", "Unclassified")
+        lines.append(f"- **{label}** — {len(group)} new")
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+    lines.append("<sub>✅ clears target · ⚠️ between floor and target · ❌ below floor · "
+                 "Colorado law requires posted pay ranges, so blanks are usually "
+                 "out-of-state or remote-national postings.</sub>")
+
+    with open(path, "w") as f:
+        f.write("\n".join(lines))
+    return path, len(jobs)
+
+
+# ---------------------------------------------------------------- main
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--first-run", action="store_true",
+                    help="use a 14-day window and seed seen.json")
+    ap.add_argument("--no-salary", action="store_true",
+                    help="skip salary enrichment fetches")
+    args = ap.parse_args()
+
+    with open(CONFIG_PATH) as f:
+        cfg = json.load(f)
+    # Personal salary thresholds live in GitHub secrets, not in the public config.
+    cand = cfg["candidate"]
+    cand["comp_floor"] = env_int("COMP_FLOOR", cand["comp_floor"])
+    cand["comp_target"] = env_int("COMP_TARGET", cand["comp_target"])
+    os.makedirs(DATA_DIR, exist_ok=True)
+
+    seen = {}
+    if os.path.exists(SEEN_PATH):
+        with open(SEEN_PATH) as f:
+            raw_seen = json.load(f)
+        # Accepts both the legacy {hash: {title, company, ...}} shape and the
+        # current {hash: "YYYY-MM-DD"}. Only membership is ever tested, so the
+        # legacy payload is dropped on the next write rather than migrated.
+        seen = {k: (v if isinstance(v, str) else
+                    (v.get("first_seen", "")[:10] if isinstance(v, dict) else ""))
+                for k, v in raw_seen.items()}
+
+    tpr = (cfg["linkedin"]["posted_within_seconds_firstrun"] if args.first_run
+           else cfg["linkedin"]["posted_within_seconds_daily"])
+
+    raw = fetch_linkedin(cfg, tpr)
+    log(f"LinkedIn: {len(raw)} raw")
+
+    board_jobs = []
+    board_jobs += fetch_greenhouse(cfg["target_boards"]["greenhouse"])
+    board_jobs += fetch_ashby(cfg["target_boards"]["ashby"])
+    log(f"Company boards: {len(board_jobs)} raw")
+
+    raw_all = raw + board_jobs
+    # Re-derive the path from the title for every job regardless of source. The
+    # LinkedIn keyword that surfaced a posting is not evidence of what it is.
+    for j in raw_all:
+        j["matched_path"] = classify_path(j, cfg)
+    raw_all = [j for j in raw_all if j["matched_path"]]
+
+    stats = {"raw": len(raw) + len(board_jobs), "boards": len(cfg["target_boards"]["greenhouse"])
+             + len(cfg["target_boards"]["ashby"]),
+             "linkedin_raw": len(raw), "board_raw": len(board_jobs),
+             # LinkedIn silently returning zero while the boards work means the IP
+             # is blocked, not that the market is quiet. Runs on cloud IPs are the
+             # likely case; the two states must never look alike downstream.
+             "degraded": len(raw) == 0 and len(board_jobs) > 0,
+             "dropped_loc": 0, "dropped_sen": 0, "dropped_seen": 0}
+
+    kept, keys = [], set()
+    for j in raw_all:
+        if not location_ok(j, cfg):
+            stats["dropped_loc"] += 1
+            continue
+        if not seniority_ok(j, cfg):
+            stats["dropped_sen"] += 1
+            continue
+        k = job_key(j["company"], j["title"])
+        if k in keys:
+            continue
+        keys.add(k)
+        if k in seen:
+            stats["dropped_seen"] += 1
+            continue
+        j["key"] = k
+        s, why = score(j, cfg)
+        if s < cfg["report"]["min_score_to_report"]:
+            continue
+        j["score"], j["why"] = s, why
+        kept.append(j)
+
+    kept.sort(key=lambda x: -x["score"])
+    log(f"Kept {len(kept)} new scored roles")
+
+    if not args.no_salary and kept:
+        log("Enriching salary + travel for top matches...")
+        enrich_details(kept, cfg, cfg["report"]["enrich_salary_for_top_n"])
+        floor = cfg["candidate"]["comp_floor"]
+        max_travel = cfg["candidate"]["max_travel_pct"]
+        for j in kept:
+            if j.get("salary_hi") and j["salary_hi"] < floor:
+                j["score"] = round(j["score"] - 3, 1)
+                j["why"].append("below comp floor")
+            if j.get("travel_pct") is not None and j["travel_pct"] > max_travel:
+                j["score"] = round(j["score"] - 2, 1)
+                j["why"].append(f"travel {j['travel_pct']}% over ceiling")
+        kept.sort(key=lambda x: -x["score"])
+
+    path, n = write_report(kept, cfg, args.first_run, stats)
+
+    now = datetime.now(timezone.utc).isoformat()
+    today_str = now[:10]
+    for j in kept:
+        seen[j["key"]] = today_str
+    with open(SEEN_PATH, "w") as f:
+        json.dump(dict(sorted(seen.items())), f, indent=0)
+
+    # Stable pointer to the newest report, for both the mailer and a human.
+    # Created here rather than in daily_run.sh so it also exists in CI.
+    try:
+        latest = os.path.join(REPORTS_DIR, "LATEST.md")
+        if os.path.islink(latest) or os.path.exists(latest):
+            os.remove(latest)
+        os.symlink(os.path.basename(path), latest)
+    except OSError as exc:
+        log(f"could not update LATEST.md: {exc}")
+
+    # Structured summary for notify_email.py. Parsing the markdown back out would
+    # be brittle; this is the contract between the two scripts.
+    top = kept[0] if kept else None
+    with open(os.path.join(DATA_DIR, "last_run.json"), "w") as f:
+        json.dump({
+            "finished_utc": now,
+            "report": os.path.relpath(path, ROOT),
+            "new_count": n,
+            "linkedin_raw": stats["linkedin_raw"],
+            "board_raw": stats["board_raw"],
+            "degraded": stats["degraded"],
+            "top": ({"title": top["title"], "company": top["company"].title(),
+                     "score": top["score"]} if top else None),
+        }, f, indent=1)
+
+    print(path)
+    print(f"{n} new roles")
+
+
+if __name__ == "__main__":
+    main()

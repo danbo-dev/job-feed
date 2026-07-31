@@ -1,0 +1,84 @@
+name: Daily Job Feed
+
+on:
+  schedule:
+    # 13:15 UTC. GitHub cron has no timezone support, so this is 7:15am during
+    # MDT and 6:15am during MST. Accepted rather than worked around.
+    - cron: '15 13 * * *'
+  workflow_dispatch:
+    inputs:
+      first_run:
+        description: 'Use a 14-day window instead of 24 hours'
+        type: boolean
+        default: false
+
+# A run takes 5-8 minutes and commits state at the end. Overlapping runs would
+# race on data/seen.json, so never let two run at once.
+concurrency:
+  group: job-feed
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # beautifulsoup4 is the only third-party import in find_jobs.py.
+      - name: Install dependencies
+        run: pip install --quiet beautifulsoup4
+
+      - name: Run the sweep
+        run: |
+          if [ "${{ inputs.first_run }}" = "true" ]; then
+            python3 scripts/find_jobs.py --first-run
+          else
+            python3 scripts/find_jobs.py
+          fi
+
+      # Surfaces the go/no-go signal in the run summary without digging through logs.
+      - name: Report source health
+        if: always()
+        run: |
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json, pathlib
+          p = pathlib.Path("data/last_run.json")
+          if not p.exists():
+              print("### Job feed\n\nNo run summary written — the sweep failed.")
+              raise SystemExit
+          d = json.loads(p.read_text())
+          print("### Job feed\n")
+          print(f"- **New roles:** {d['new_count']}")
+          print(f"- **LinkedIn raw:** {d['linkedin_raw']}")
+          print(f"- **Company boards raw:** {d['board_raw']}")
+          if d["degraded"]:
+              print("\n> ⚠️ **LinkedIn returned 0 while boards worked.** "
+                    "The runner IP is almost certainly blocked. Coverage is partial.")
+          if d.get("top"):
+              print(f"\nTop match: **{d['top']['title']}** @ {d['top']['company']} "
+                    f"(score {d['top']['score']})")
+          PY
+
+      - name: Email the report
+        env:
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+        run: python3 scripts/notify_email.py
+
+      # seen.json is the dedupe state. Without this commit every run would
+      # re-report every job it has already sent.
+      - name: Commit state and report
+        if: always()
+        run: |
+          git config --local user.name "github-actions[bot]"
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/seen.json data/last_run.json reports/ || true
+          git diff --staged --quiet || git commit -m "Job feed: $(date -u +%Y-%m-%d) [skip ci]"
+          git push || true
