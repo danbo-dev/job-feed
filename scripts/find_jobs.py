@@ -334,9 +334,30 @@ def score(job, cfg):
     return round(pts, 1), why
 
 
+# "a year" belongs here: LinkedIn renders Greenhouse/Lever ranges as
+# "$156,000 - $196,000 a year", which matched none of the original cues. That
+# silently read as "no compensation posted" - survivable when it only cost the
+# role a score, disqualifying now that a missing range drops the role outright.
 COMP_CUE = re.compile(
-    r"(salary|compensation|pay range|base pay|pay band|annual|per year|/yr|yearly|USD)",
+    r"(salary|compensation|pay range|base pay|pay band|hiring range|annual|"
+    r"per year|a year|/yr|yearly|per annum|USD)",
     re.I)
+
+# LinkedIn appends a "People also viewed" rail of other postings, each with its
+# own salary. Those figures sit near no comp cue today, so they are ignored by
+# luck rather than design - and one loosened cue away from being read as this
+# job's pay. Cut the page at the rail instead of relying on that.
+PAGE_TAIL = re.compile(
+    r"(people also viewed|similar jobs|more jobs like this|recommended for you|"
+    r"jobs you may be interested in|explore collaborative articles)", re.I)
+
+
+def strip_page_chrome(text):
+    """Drop everything after the job description - see PAGE_TAIL."""
+    if not text:
+        return text
+    m = PAGE_TAIL.search(text)
+    return text[:m.start()] if m else text
 
 RANGE_RE = re.compile(
     r"\$\s?([\d][\d,]*(?:\.\d+)?)\s?(k\b)?\s*(?:-|–|—|to|and)\s*\$?\s?([\d][\d,]*(?:\.\d+)?)\s?(k\b)?",
@@ -415,7 +436,13 @@ def extract_travel(text):
 
 
 def enrich_details(jobs, cfg, limit):
-    """Fetch detail pages for the top N jobs; attach salary range and travel load."""
+    """Fetch detail pages for the top N jobs; attach salary range and travel load.
+
+    Sets job["read"] only when the page actually came back and was parsed. Comp
+    and travel are hard filters now, so "no salary found" and "never looked" have
+    to stay distinguishable - the first is a reason to drop a role, the second is
+    a reason to try again tomorrow.
+    """
     done = 0
     for job in jobs:
         if done >= limit:
@@ -427,7 +454,9 @@ def enrich_details(jobs, cfg, limit):
         done += 1
         if not html:
             continue
-        text = re.sub(r"\s+", " ", BeautifulSoup(html, "html.parser").get_text(" "))
+        text = strip_page_chrome(
+            re.sub(r"\s+", " ", BeautifulSoup(html, "html.parser").get_text(" ")))
+        job["read"] = True
         lo, hi = extract_salary(text)
         if lo:
             job["salary_lo"], job["salary_hi"] = lo, hi
@@ -436,6 +465,42 @@ def enrich_details(jobs, cfg, limit):
         if tv is not None:
             job["travel_pct"] = tv
     return jobs
+
+
+def apply_hard_filters(jobs, cfg, stats):
+    """Drop roles that fail Dan's non-negotiables. Returns the survivors.
+
+    Every dropped job is tagged with j["dropped_by"] so main() can tell the two
+    outcomes apart when it writes seen.json: a role judged and rejected is
+    settled and should never surface again, but a role we could not read is
+    unjudged and must stay eligible for the next run.
+    """
+    hf = cfg["candidate"].get("hard_filters", {})
+    floor = cfg["candidate"]["comp_floor"]
+    max_travel = cfg["candidate"]["max_travel_pct"]
+    kept = []
+    for j in jobs:
+        if not j.get("read"):
+            j["dropped_by"] = "unread"
+            stats["dropped_unread"] += 1
+            continue
+        top = j.get("salary_hi") or j.get("salary_lo")
+        if hf.get("require_posted_comp", True) and not top:
+            j["dropped_by"] = "no_comp"
+            stats["dropped_no_comp"] += 1
+            continue
+        if hf.get("require_high_end_above_floor", True) and top and top < floor:
+            j["dropped_by"] = "below_floor"
+            stats["dropped_below_floor"] += 1
+            continue
+        if (hf.get("enforce_travel_ceiling", True)
+                and j.get("travel_pct") is not None
+                and j["travel_pct"] > max_travel):
+            j["dropped_by"] = "travel"
+            stats["dropped_travel"] += 1
+            continue
+        kept.append(j)
+    return kept
 
 
 # ---------------------------------------------------------------- reporting
@@ -475,8 +540,12 @@ def write_report(jobs, cfg, first_run, stats):
     lines.append(f"# Job feed — {datetime.now().strftime('%A, %B %-d, %Y')}")
     lines.append("")
     window = "last 14 days (first run)" if first_run else "last 24 hours"
-    lines.append(f"*{len(jobs)} new roles matched* · window: {window} · "
-                 f"floor {money(floor)} · Denver metro or remote · travel <50%")
+    bar = (f"comp posted and topping out at {money(floor)}+ · "
+           f"Denver metro or remote · travel ≤{cfg['candidate']['max_travel_pct']}%")
+    if stats.get("filters_skipped"):
+        bar = (f"Denver metro or remote · **comp and travel filters skipped** "
+               f"(run without detail fetches — figures below are unverified)")
+    lines.append(f"*{len(jobs)} new roles matched* · window: {window} · {bar}")
     lines.append("")
     lines.append(f"<sub>Scanned {stats['raw']} raw postings from LinkedIn + "
                  f"{stats['boards']} company boards. "
@@ -484,6 +553,27 @@ def write_report(jobs, cfg, first_run, stats):
                  f"{stats['dropped_sen']} on seniority, "
                  f"{stats['dropped_seen']} already seen.</sub>")
     lines.append("")
+
+    # Every one of these was a role that scored well enough to report and was then
+    # thrown out on comp or travel. Showing the count is the only way to tell an
+    # honestly quiet day from filters that are set too tight.
+    cut = (stats.get("dropped_no_comp", 0) + stats.get("dropped_below_floor", 0)
+           + stats.get("dropped_travel", 0))
+    if cut:
+        lines.append(f"<sub>**{cut} scoring roles were filtered out:** "
+                     f"{stats['dropped_no_comp']} posted no compensation, "
+                     f"{stats['dropped_below_floor']} topped out below your "
+                     f"{money(floor)} floor, "
+                     f"{stats['dropped_travel']} exceeded your "
+                     f"{cfg['candidate']['max_travel_pct']}% travel ceiling. "
+                     f"Loosen these in `config.candidate.hard_filters`.</sub>")
+        lines.append("")
+    if stats.get("dropped_unread"):
+        lines.append(f"<sub>{stats['dropped_unread']} roles could not be opened to "
+                     f"check comp or travel, so they were held back rather than "
+                     f"shown unverified. They stay eligible and will be retried on "
+                     f"the next run.</sub>")
+        lines.append("")
 
     # A blocked source and a genuinely quiet day produce the same empty report.
     # Say which one this is, loudly, or a silent outage reads as good news.
@@ -499,6 +589,11 @@ def write_report(jobs, cfg, first_run, stats):
         if stats.get("degraded"):
             lines.append("No new roles — but see the warning above. This report is "
                          "not trustworthy as a signal that there was nothing to find.")
+        elif cut:
+            lines.append(f"Nothing cleared the bar today — but {cut} roles scored well "
+                         f"and were cut on comp or travel alone, as broken out above. "
+                         f"If that keeps happening, the filters are doing more work "
+                         f"than the market is.")
         else:
             lines.append("Nothing new cleared the bar today. That's normal on a Monday "
                          "or a holiday week — the sweep still ran and all sources "
@@ -521,7 +616,8 @@ def write_report(jobs, cfg, first_run, stats):
         lines.append(f"- **Location:** {j['location'] or 'not stated'}")
         lines.append(f"- **Comp:** {salary_cell(j, floor, target)}")
         if j.get("travel_pct") is not None:
-            over = " ⚠️ over your 50% ceiling" if j["travel_pct"] > cfg["candidate"]["max_travel_pct"] else ""
+            ceiling = cfg["candidate"]["max_travel_pct"]
+            over = f" ⚠️ over your {ceiling}% ceiling" if j["travel_pct"] > ceiling else ""
             lines.append(f"- **Travel:** up to {j['travel_pct']}%{over}")
         lines.append(f"- **Score:** {j['score']} — {', '.join(j['why'][:4])}")
         lines.append(f"- **Source:** {j['source']}"
@@ -551,9 +647,9 @@ def write_report(jobs, cfg, first_run, stats):
     lines.append("")
     lines.append("---")
     lines.append("")
-    lines.append("<sub>✅ clears target · ⚠️ between floor and target · ❌ below floor · "
-                 "Colorado law requires posted pay ranges, so blanks are usually "
-                 "out-of-state or remote-national postings.</sub>")
+    lines.append("<sub>✅ clears target · ⚠️ between floor and target · "
+                 "every role here posts a range that tops out at or above your floor "
+                 "and sits inside your travel ceiling.</sub>")
 
     with open(path, "w") as f:
         f.write("\n".join(lines))
@@ -614,7 +710,9 @@ def main():
              # is blocked, not that the market is quiet. Runs on cloud IPs are the
              # likely case; the two states must never look alike downstream.
              "degraded": len(raw) == 0 and len(board_jobs) > 0,
-             "dropped_loc": 0, "dropped_sen": 0, "dropped_seen": 0}
+             "dropped_loc": 0, "dropped_sen": 0, "dropped_seen": 0,
+             "dropped_no_comp": 0, "dropped_below_floor": 0, "dropped_travel": 0,
+             "dropped_unread": 0, "filters_skipped": False}
 
     kept, keys = [], set()
     for j in raw_all:
@@ -641,26 +739,32 @@ def main():
     kept.sort(key=lambda x: -x["score"])
     log(f"Kept {len(kept)} new scored roles")
 
+    judged = kept
     if not args.no_salary and kept:
         log("Enriching salary + travel for top matches...")
         enrich_details(kept, cfg, cfg["report"]["enrich_salary_for_top_n"])
-        floor = cfg["candidate"]["comp_floor"]
-        max_travel = cfg["candidate"]["max_travel_pct"]
-        for j in kept:
-            if j.get("salary_hi") and j["salary_hi"] < floor:
-                j["score"] = round(j["score"] - 3, 1)
-                j["why"].append("below comp floor")
-            if j.get("travel_pct") is not None and j["travel_pct"] > max_travel:
-                j["score"] = round(j["score"] - 2, 1)
-                j["why"].append(f"travel {j['travel_pct']}% over ceiling")
+        kept = apply_hard_filters(kept, cfg, stats)
         kept.sort(key=lambda x: -x["score"])
+        log(f"{len(kept)} cleared the hard filters "
+            f"({stats['dropped_no_comp']} no comp posted, "
+            f"{stats['dropped_below_floor']} under floor, "
+            f"{stats['dropped_travel']} over travel ceiling, "
+            f"{stats['dropped_unread']} unread - held for next run)")
+    else:
+        # --no-salary skips the detail fetches, so there is no evidence to filter
+        # on. Report everything rather than dropping roles that were never judged.
+        stats["filters_skipped"] = True
 
     path, n = write_report(kept, cfg, args.first_run, stats)
 
     now = datetime.now(timezone.utc).isoformat()
     today_str = now[:10]
-    for j in kept:
-        seen[j["key"]] = today_str
+    # Roles that were read and rejected are settled - record them so tomorrow's
+    # run does not spend another detail fetch reaching the same verdict. Roles we
+    # could not read are deliberately left out of seen.json so they come back.
+    for j in judged:
+        if j.get("dropped_by") in (None, "no_comp", "below_floor", "travel"):
+            seen[j["key"]] = today_str
     with open(SEEN_PATH, "w") as f:
         json.dump(dict(sorted(seen.items())), f, indent=0)
 

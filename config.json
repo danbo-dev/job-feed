@@ -4,7 +4,13 @@
     "_comment": "Real thresholds arrive as COMP_FLOOR / COMP_TARGET env vars (GitHub secrets). These defaults are placeholders.",
     "comp_floor": 0,
     "comp_target": 0,
-    "max_travel_pct": 50
+    "max_travel_pct": 50,
+    "_hard_filters_comment": "These drop roles from the report entirely rather than just demoting their score. A role is only dropped on evidence: the detail page must have been fetched and read. Anything unread is held back for the next run, never silently discarded.",
+    "hard_filters": {
+      "require_posted_comp": true,
+      "require_high_end_above_floor": true,
+      "enforce_travel_ceiling": true
+    }
   },
   "location_filters": {
     "allow_remote": true,
@@ -438,7 +444,8 @@
   "report": {
     "top_n_full_detail": 10,
     "min_score_to_report": 7.0,
-    "enrich_salary_for_top_n": 60,
+    "_enrich_comment": "Comp and travel are now hard filters, so anything past this cap is held for the next run rather than reported unchecked. Keep it above a normal day's kept count.",
+    "enrich_salary_for_top_n": 120,
     "max_total_report": 45
   },
   "email": {
