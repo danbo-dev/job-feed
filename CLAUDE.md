@@ -59,6 +59,47 @@ Full pipeline confirmed working: **12 new roles swept, scored, emailed, received
    lost that way. `notify_email.py` now writes `data/delivered.flag` on success
    only, and the commit step skips `seen.json` without it.
 
+## Comp and travel are hard filters (2026-07-31)
+
+After the first live run, Dan asked for three exclusions rather than score
+penalties: **no posted comp, high end below the floor, and travel over 50% all
+drop the role from the report.** Toggles live in
+`config.candidate.hard_filters`; on a 14-day test sweep they cut 35 scored roles
+to 16 (7 no comp, 6 under floor, 6 over ceiling).
+
+The rule that keeps this safe: **a role is only dropped on evidence.**
+`enrich_details()` sets `job["read"]` only when the detail page actually came
+back, and `apply_hard_filters()` holds anything unread for the next run instead
+of discarding it unjudged. `seen.json` records roles that were read and
+rejected — a settled verdict shouldn't cost another fetch tomorrow — but never
+records unread ones, so a fetch failure is a delay, not a deletion.
+
+Because of that, `enrich_salary_for_top_n` is now a coverage floor, not a
+nicety: anything past the cap is held back rather than reported unchecked. It's
+at 120 against a `max_total_report` of 45.
+
+`--no-salary` skips the filters entirely (no fetches means no evidence) and
+says so in the report header.
+
+### The bug this nearly buried
+
+LinkedIn renders many ranges as `$156,000 - $196,000 a year`, and **"a year"
+was not in `COMP_CUE`** — so those posts extracted as "no comp posted." Under
+the old scoring that cost a role a few points. Under a hard filter it deletes
+the role and marks it seen forever. One role in the test sweep was recovered by
+adding the cue ($156–196K, clears the floor). Verified the other six no-comp
+drops that run were genuinely blank.
+
+Tightening cues raised a second risk, so the page is now cut at LinkedIn's
+"People also viewed" rail before parsing — those neighbouring postings carry
+their own salaries and were being ignored only because no comp cue happened to
+sit near them.
+
+Travel extraction was audited the same way and needed no change: every match on
+the dropped roles was a real requirement ("Travel Requirements: Up to 60%",
+"travel is estimated at 40-60%"). Big-4 SAP practice roles are what this filter
+mostly removes, which matches the known constraint.
+
 ## Gotchas
 
 - Match on **word boundaries** — `erp` otherwise hits "Enterprise", `film` hits
@@ -66,6 +107,10 @@ Full pipeline confirmed working: **12 new roles swept, scored, emailed, received
 - Never trust the LinkedIn keyword that surfaced a posting; re-derive the path from
   the title via `classify_path()`.
 - "San Mateo, CA, United States" is **not** remote. See `is_remote()`.
-- `extract_salary()` only reads figures near a compensation cue.
+- `extract_salary()` only reads figures near a compensation cue — and comp is now
+  a hard filter, so **a missing cue silently deletes roles**. Test any cue change
+  against real pages before shipping it.
+- The email escapes raw HTML except `<sub>`. Use markdown backticks for code
+  spans; a literal `<code>` tag arrives as `&lt;code&gt;`.
 - Greenhouse board tokens either 200 or 404 — test before adding.
 - `html.parser`, not `lxml`.

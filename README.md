@@ -35,7 +35,7 @@ set as repository secrets:
 | `EMAIL_TO` | Where the report goes |
 | `EMAIL_FROM` | Sending address |
 | `EMAIL_PASSWORD` | Gmail **app password** — not an account password |
-| `COMP_FLOOR` | Below this, a role is demoted |
+| `COMP_FLOOR` | A role whose range tops out below this is dropped, not demoted |
 | `COMP_TARGET` | At or above this, it's marked ✅ |
 
 Each falls back to `config.json` when unset, so it also runs locally.
