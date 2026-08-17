@@ -17,7 +17,10 @@ Runs on GitHub Actions. No auth, no scraping logins, no paid APIs.
    **longest** matching signal, which is what keeps "Warehouse Management System
    Manager" and "Warehouse Manager" in different paths.
 3. **Scores** — path fit, tiered seniority, target company, geography tier, and
-   provable skills.
+   provable skills. The target band is **Senior Manager to Director**; roles above it
+   (`Senior Director`, `Executive Director`, VP and up) are dropped by
+   `seniority.over_level`, which is regex rather than a phrase list because
+   "Senior Product Director" and "Senior Director" are the same level.
 4. **Enriches** — fetches each match's detail page for the posted salary range and
    travel percentage, then drops anything under the floor or over the travel
    ceiling.

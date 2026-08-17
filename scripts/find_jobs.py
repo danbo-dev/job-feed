@@ -403,8 +403,22 @@ def is_remote(loc, title, lf):
 
 
 def seniority_ok(job, cfg):
+    """False for roles outside Dan's band, in either direction.
+
+    Rejections here happen before scoring, so they never reach seen.json - a role
+    dropped for level will resurface if the rule is loosened later. That is not
+    true of the comp and travel filters, which record a settled verdict.
+    """
     t = (job.get("title") or "").lower()
-    return not any(has_word(r, t) for r in cfg["seniority"]["reject"])
+    if any(has_word(r, t) for r in cfg["seniority"]["reject"]):
+        return False
+    # Above the target band. Needs regex rather than phrase matching because the
+    # words are not always adjacent - "Senior Product Director" is the same level
+    # as "Senior Director" and a literal phrase list catches only the latter.
+    for pat in cfg["seniority"].get("over_level", {}).get("patterns", []):
+        if re.search(pat, t, re.I):
+            return False
+    return True
 
 
 def classify_path(job, cfg):

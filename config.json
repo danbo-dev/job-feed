@@ -470,6 +470,13 @@
         ]
       }
     },
+    "over_level": {
+      "_comment": "Regex, not phrase terms, because the words are not always adjacent: the 2026-08-17 email led with 'Senior Director, Product Management' AND 'Senior Product Director - NetSuite WMS', and a literal 'senior director' misses the second. Dan is targeting Director at the highest and is not eligible above it (2026-08-17), so these are dropped rather than demoted. Safe to reverse: seniority rejections happen before scoring, so they never reach seen.json and will resurface if this is removed. The [^,]{0,30} bound is deliberate - it stops 'senior' in one comma clause pairing with 'director' in another, which is what keeps 'Director of Senior Living Operations' out of this net.",
+      "patterns": [
+        "\\b(?:senior|sr\\.?)\\b[^,]{0,30}\\bdirector\\b",
+        "\\b(?:executive|managing|group)\\s+director\\b"
+      ]
+    },
     "ic_penalty": {
       "points": -2.5,
       "terms": [

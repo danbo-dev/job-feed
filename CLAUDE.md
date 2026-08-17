@@ -131,6 +131,35 @@ Two non-obvious properties, both load-bearing:
   `company_path_fallback` exists. `domain_bonus` can't do that job — it only applies
   *after* a path is assigned.
 
+### Level band — Director is the ceiling, not the floor (2026-08-17)
+
+The first email led with **"Senior Director, Product Management"** (11.4) and **"Senior
+Product Director – NetSuite WMS"** (10.3). Dan: *those are too high up for me... I would
+not be eligible.* He targets **Director at the highest**, Senior Manager at the lowest.
+
+`seniority.over_level` drops them. It is **regex, not a phrase list**, and that is the
+whole point: the two titles above are the same level, but the words are only adjacent in
+the first. A literal `senior director` term catches one and misses the other.
+
+```
+\b(?:senior|sr\.?)\b[^,]{0,30}\bdirector\b
+\b(?:executive|managing|group)\s+director\b
+```
+
+The `[^,]{0,30}` bound stops "senior" in one comma clause pairing with "director" in
+another — it is what keeps *"Director of Senior Living Operations"* and *"Director,
+Senior Services"* in band. Covered by `LEVEL_CASES` in the test suite.
+
+**A level rejection is reversible; a comp rejection is not.** `seniority_ok()` runs
+*before* scoring, so rejected roles never enter `kept`, and only `kept` roles are written
+to `seen.json`. Loosen this rule later and those roles resurface on the next sweep. The
+same is true of anything scoring under `min_score_to_report`. It is **not** true of the
+comp, floor, and travel filters, which record a settled verdict precisely so tomorrow's
+run doesn't re-fetch a page to reach the same answer.
+
+Applied to the 2026-08-17 report it removes 3 of 36 — but two of them were the #1 and #2
+slots, which is why the email read as aimed a level too high on a 3-role change.
+
 ### Seniority — tiered, aimed a level up
 
 Director +2.5 / Senior Manager +2.0 / Manager +1.0, resolved by longest match so

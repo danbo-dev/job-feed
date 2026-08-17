@@ -70,7 +70,7 @@ CASES = [
      "ops_leadership", "core", False),
 
     # --- geography still excludes the rest of the country ---
-    ("Senior Director, Supply Chain Systems", "Albertsons", "Boise, ID",
+    ("Director, Supply Chain Systems", "Albertsons", "Boise, ID",
      "warehouse_systems", None, False),
 
     # --- plurals. has_word() is exact, so "Systems" does NOT match the signal
@@ -78,7 +78,7 @@ CASES = [
     # the plural silently demoted this real posting to the fallback path. Both
     # forms are enumerated in config; do not "fix" this by loosening has_word(),
     # which would re-introduce "film" matching "Thin Films".
-    ("Senior Director, Warehouse Management Systems & Labor Management",
+    ("Director, Warehouse Management Systems & Labor Management",
      "Michaels", "Denver, CO", "warehouse_systems", "core", True),
     ("Distribution System Director", "Dot Foods", "Denver, CO",
      "warehouse_systems", "core", True),
@@ -111,6 +111,47 @@ FILTER_CASES = [
     ("ordinary role with good comp",
      {"score": 7.5, "read": True, "salary_lo": 160000, "salary_hi": 200000}, "kept"),
 ]
+
+
+# Level band. Dan targets Director at the highest and Senior Manager at the lowest;
+# he is not eligible above Director. The rearranged forms matter — the 2026-08-17
+# email led with BOTH "Senior Director, Product Management" and "Senior Product
+# Director", and a literal "senior director" phrase match catches only the first.
+# title, should seniority_ok() pass it?
+LEVEL_CASES = [
+    ("Senior Director, Product Management", False),
+    ("Senior Product Director – NetSuite WMS", False),
+    ("Sr. Director of Supply Chain", False),
+    ("Sr Director, Warehouse Systems", False),
+    ("Senior Technical Director", False),
+    ("Executive Director, Operations", False),
+    ("Managing Director", False),
+    ("Vice President, Supply Chain", False),
+    # In band — must survive.
+    ("Director, Warehouse Systems", True),
+    ("Director of Product Management", True),
+    ("Director Technical Program Manager", True),
+    ("Senior Manager, Warehouse Systems", True),
+    ("Senior Product Manager", True),
+    # "senior" sits in a different comma clause than "director" — not over-level.
+    ("Director of Senior Living Operations", True),
+    ("Director, Senior Services", True),
+]
+
+
+def check_levels(cfg):
+    failures = []
+    print()
+    print("level band")
+    print("-" * 88)
+    for title, want in LEVEL_CASES:
+        got = fj.seniority_ok({"title": title}, cfg)
+        ok = got == want
+        if not ok:
+            failures.append((title, f"seniority_ok={got} want={want}"))
+        verdict = "in band" if got else "rejected"
+        print(f"{title:<52} {verdict:<12}{'' if ok else '  <-- want ' + str(want)}")
+    return failures
 
 
 def check_filters(cfg):
@@ -150,7 +191,8 @@ def main():
         tier, flag = fj.location_verdict(job, cfg)
         job["geo_tier"], job["geo_flag"] = tier, flag
         pts, _why = fj.score(job, cfg) if job["matched_path"] else (0.0, [])
-        reports = bool(tier) and pts >= threshold
+        # Level band included, or "reports" would claim roles Dan cannot take.
+        reports = bool(tier) and fj.seniority_ok(job, cfg) and pts >= threshold
 
         problems = []
         if job["matched_path"] != want_path:
@@ -168,15 +210,19 @@ def main():
 
     print("-" * 88)
 
+    level_failures = check_levels(cfg)
+    print("-" * 88)
+
     filter_failures = check_filters(cfg)
     print("-" * 88)
 
-    total = len(CASES) + len(FILTER_CASES)
-    if failures or filter_failures:
-        print(f"FAILED: {len(failures) + len(filter_failures)} of {total}")
+    total = len(CASES) + len(LEVEL_CASES) + len(FILTER_CASES)
+    all_extra = level_failures + filter_failures
+    if failures or all_extra:
+        print(f"FAILED: {len(failures) + len(all_extra)} of {total}")
         for title, company, problems in failures:
             print(f"  {title} @ {company}: {'; '.join(problems)}")
-        for label, problem in filter_failures:
+        for label, problem in all_extra:
             print(f"  {label}: {problem}")
         return 1
     print(f"PASSED: all {total} cases")
