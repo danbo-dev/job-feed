@@ -1,11 +1,12 @@
 {
   "_comment": "Search parameters. Edit freely - find_jobs.py reads this every run. Personal values (addresses, salary thresholds) come from environment variables, never this file.",
+  "_retuned": "2026-08-17: retuned to the 2026-08-16 resume rebuild. Analytics dropped, warehouse_systems added as the lead path, targeting raised to Director/Senior Manager, geography moved from a flat allow-list to core/relocate/passion tiers.",
   "candidate": {
     "_comment": "Real thresholds arrive as COMP_FLOOR / COMP_TARGET env vars (GitHub secrets). These defaults are placeholders.",
     "comp_floor": 0,
     "comp_target": 0,
     "max_travel_pct": 50,
-    "_hard_filters_comment": "These drop roles from the report entirely rather than just demoting their score. A role is only dropped on evidence: the detail page must have been fetched and read. Anything unread is held back for the next run, never silently discarded.",
+    "_hard_filters_comment": "These drop roles from the report entirely rather than just demoting their score. A role is only dropped on evidence: the detail page must have been fetched and read. Anything unread is held back for the next run, never silently discarded. The travel ceiling is load-bearing for the 2026-08-16 SAP reframe - Big-4 functional practice roles are the 40-80% travel ones, and this is what actually removes them.",
     "hard_filters": {
       "require_posted_comp": true,
       "require_high_end_above_floor": true,
@@ -14,36 +15,6 @@
   },
   "location_filters": {
     "allow_remote": true,
-    "allow_states": [
-      "CO",
-      "Colorado"
-    ],
-    "allow_metros": [
-      "denver",
-      "boulder",
-      "aurora",
-      "lakewood",
-      "englewood",
-      "centennial",
-      "littleton",
-      "broomfield",
-      "westminster",
-      "louisville",
-      "golden",
-      "greenwood village",
-      "colorado springs",
-      "fort collins",
-      "longmont",
-      "arvada",
-      "thornton",
-      "superior",
-      "erie",
-      "castle rock",
-      "lone tree",
-      "denver metropolitan",
-      "denver-aurora",
-      "front range"
-    ],
     "remote_markers": [
       "remote",
       "work from home",
@@ -60,6 +31,143 @@
       "relocation required",
       "must relocate"
     ],
+    "geo_tiers": {
+      "_comment": "Tiered geography, 2026-08-17. core = no move required. relocate = Dan would move for a strong offer, so these are included but FLAGGED so the cost is visible. passion = only worth a move for the right kind of role, so each city is gated by matched path OR employer. Anything not matching a tier is excluded.",
+      "core": {
+        "score_adj": 1.5,
+        "flag": null,
+        "allow_remote": true,
+        "_states_comment": "Hybrid and on-site in Denver are INCLUDED on purpose - Dan likes an office.",
+        "states": [
+          "CO",
+          "Colorado"
+        ],
+        "metros": [
+          "denver",
+          "boulder",
+          "aurora",
+          "lakewood",
+          "englewood",
+          "centennial",
+          "littleton",
+          "broomfield",
+          "westminster",
+          "louisville",
+          "golden",
+          "greenwood village",
+          "colorado springs",
+          "fort collins",
+          "longmont",
+          "arvada",
+          "thornton",
+          "superior",
+          "erie",
+          "castle rock",
+          "lone tree",
+          "denver metropolitan",
+          "denver-aurora",
+          "front range"
+        ]
+      },
+      "relocate": {
+        "score_adj": -0.5,
+        "flag": "relocation",
+        "_comment": "Atlanta is the strongest core-career option (Manhattan Associates, plus Home Depot / UPS / Coca-Cola / Delta supply chain; GA roots). San Diego secondary.",
+        "metros": [
+          "atlanta",
+          "alpharetta",
+          "marietta",
+          "sandy springs",
+          "roswell",
+          "dunwoody",
+          "kennesaw",
+          "duluth, ga",
+          "san diego",
+          "carlsbad",
+          "la jolla",
+          "chula vista",
+          "oceanside",
+          "poway"
+        ]
+      },
+      "passion": {
+        "score_adj": 0.0,
+        "flag": "relocation",
+        "_comment": "Gated: a role here must match one of the gate's paths OR one of its employers. The employer allowlist is not redundant - a title like 'Technical Program Manager, Studio Technology' classifies as product_program under longest-match, so a path-only gate would exclude exactly the roles that make these cities worth considering.",
+        "gates": [
+          {
+            "note": "F1 / motorsport host cities - motorsport roles only",
+            "metros": [
+              "austin",
+              "round rock",
+              "cedar park",
+              "miami",
+              "miami gardens",
+              "fort lauderdale",
+              "coral gables",
+              "las vegas",
+              "henderson",
+              "north las vegas",
+              "paradise, nv"
+            ],
+            "paths": [
+              "motorsport"
+            ],
+            "companies": [
+              "liberty media",
+              "formula 1",
+              "formula one",
+              "haas",
+              "mclaren",
+              "andretti",
+              "nascar",
+              "indycar",
+              "penske",
+              "cota",
+              "circuit of the americas",
+              "grand prix",
+              "speedway",
+              "raceway",
+              "motorsport"
+            ]
+          },
+          {
+            "note": "Los Angeles - media / film business and technology side only, never creative",
+            "metros": [
+              "los angeles",
+              "burbank",
+              "culver city",
+              "santa monica",
+              "hollywood",
+              "glendale",
+              "pasadena",
+              "el segundo",
+              "universal city",
+              "century city",
+              "playa vista"
+            ],
+            "paths": [
+              "media_entertainment"
+            ],
+            "companies": [
+              "netflix",
+              "disney",
+              "warner",
+              "paramount",
+              "sony pictures",
+              "lionsgate",
+              "a24",
+              "hulu",
+              "amc networks",
+              "nbcuniversal",
+              "fox corporation",
+              "skydance",
+              "legendary"
+            ]
+          }
+        ]
+      }
+    },
     "reject_countries": [
       "canada",
       "ontario",
@@ -116,90 +224,119 @@
     ]
   },
   "paths": {
+    "warehouse_systems": {
+      "label": "Warehouse / supply-chain systems leadership",
+      "note": "LEAD path (2026-08-16). Closest match to what Dan does today and the highest conversion. Résumé variant: warehouse-systems. Note the signal split against ops_leadership: 'warehouse management system' and 'wms' belong here, bare 'warehouse management' / 'warehouse manager' / 'warehouse operations' belong to ops_leadership. classify_path() resolves the overlap by longest match, so keep the long forms here and the short forms there.",
+      "weight": 1.2,
+      "keywords": [
+        "Director Warehouse Systems",
+        "Warehouse Systems Manager",
+        "Senior Manager Warehouse Systems",
+        "WMS Product Manager",
+        "Director Distribution Technology",
+        "Director Supply Chain Systems",
+        "Supply Chain Systems Manager",
+        "Warehouse Technology Lead",
+        "Director Warehouse Solutions",
+        "Warehouse Execution Systems Manager"
+      ],
+      "title_signals": [
+        "warehouse systems",
+        "warehouse system",
+        "warehouse execution",
+        "wes",
+        "warehouse management system",
+        "warehouse management systems",
+        "wms",
+        "distribution system",
+        "distribution systems",
+        "distribution technology",
+        "supply chain system",
+        "supply chain systems",
+        "supply chain technology",
+        "warehouse technology",
+        "warehouse solutions",
+        "fulfillment system",
+        "fulfillment systems",
+        "warehouse automation"
+      ]
+    },
+    "product_program": {
+      "label": "Product / technical program management",
+      "note": "Co-lead path (2026-08-16). Dan manages product owners, owns a live backlog, and holds sole UAT-start and production sign-off - which closes the credibility gap POSITIONING.md used to flag here. Opens the tech sector, where equity lifts total comp. Résumé variant: product-program.",
+      "weight": 1.1,
+      "keywords": [
+        "Director of Program Management",
+        "Director Technical Program Management",
+        "Senior Technical Program Manager",
+        "Technical Program Manager",
+        "Principal Program Manager",
+        "Principal Product Manager",
+        "Director of Product Management",
+        "Senior Product Manager",
+        "Technical Product Manager"
+      ],
+      "title_signals": [
+        "technical program manager",
+        "program manager",
+        "product manager",
+        "tpm",
+        "product owner",
+        "product lead",
+        "principal program",
+        "program management",
+        "product management"
+      ]
+    },
     "sap_erp": {
-      "label": "SAP / ERP program + deployment",
-      "note": "The direct lateral. Highest hit rate, resume already matches.",
+      "label": "SAP / ERP program + deployment (business side)",
+      "note": "Business-side ONLY. Dan was the business expert directing matrixed IBM/SAP functional consultants - he does not want and would not win functional-consultant or Big-4 practice roles. Site readiness, cutover, and deployment are ERP-deployment signals and stay here, NOT in warehouse_systems. Enforcement is three-layered: no magnet keywords, explicit rejects in seniority.reject, and employer_penalties for the Big-4 - plus the travel ceiling, which does most of the work. Résumé variant: sap-erp.",
       "weight": 1.0,
       "keywords": [
         "SAP Program Manager",
         "SAP Deployment Manager",
         "SAP Project Manager",
         "ERP Program Manager",
+        "Director ERP",
         "ERP Implementation Manager",
+        "ERP Deployment Director",
         "S/4HANA Program Manager",
         "SAP Change Management Lead",
-        "Business Transformation Manager",
-        "Supply Chain Transformation Manager"
+        "Site Readiness Lead",
+        "Release Governance Manager"
       ],
+      "_signal_length_comment": "The multi-word forms are mandatory, not redundant. classify_path() resolves by LONGEST match, so bare 'sap' (3 chars) loses to product_program's 'program manager' (15) - which sent every 'SAP Program Manager', Dan's single most common target title, into the wrong path until this was caught in testing 2026-08-17.",
       "title_signals": [
         "sap",
         "erp",
         "s/4hana",
         "s4hana",
         "s/4",
-        "wms",
-        "warehouse management",
+        "sap program manager",
+        "sap project manager",
+        "sap deployment manager",
+        "sap program",
+        "erp program manager",
+        "erp project manager",
+        "erp program",
         "erp implementation",
         "erp deployment",
         "site readiness",
-        "deployment manager"
-      ]
-    },
-    "data_analytics": {
-      "label": "Data / analytics (entertainment, gaming, sports, media)",
-      "note": "Path 1. Lead with the GTM analyst work, not the PM title.",
-      "weight": 1.0,
-      "keywords": [
-        "Senior Data Analyst",
-        "Analytics Manager",
-        "Business Intelligence Manager",
-        "Senior Insights Analyst",
-        "Data Analytics Manager",
-        "Business Intelligence Lead",
-        "Senior Business Analyst"
-      ],
-      "title_signals": [
-        "data analyst",
-        "analytics",
-        "business intelligence",
-        "bi",
-        "insights",
-        "tableau",
-        "data science",
-        "data manager"
-      ]
-    },
-    "product_program": {
-      "label": "Product / technical program management",
-      "note": "Path 2. Highest comp band. Needs a case study to be credible.",
-      "weight": 0.9,
-      "keywords": [
-        "Senior Technical Program Manager",
-        "Technical Program Manager",
-        "Senior Program Manager",
-        "Senior Product Manager",
-        "Technical Product Manager",
-        "Principal Program Manager"
-      ],
-      "title_signals": [
-        "product manager",
-        "program manager",
-        "technical program manager",
-        "tpm",
-        "product owner",
-        "product lead",
-        "principal program"
+        "cutover",
+        "deployment manager",
+        "release governance"
       ]
     },
     "ops_leadership": {
       "label": "Operations / supply chain leadership",
-      "note": "Fallback lateral. Uses the Sr Ops Manager resume variant.",
+      "_weight_comment": "0.8, not 0.7: at 0.7 a Denver Director of Operations scores 6.8 against a 7.0 report threshold, which silences the fallback path completely rather than merely ranking it last.",
+      "note": "FALLBACK (2026-08-16) - held in reserve, not a primary push, hence the lowest weight. Also the base to re-angle for sports/entertainment operations. Owns the bare warehouse/ops title forms; the systems forms belong to warehouse_systems. Résumé variant: operations.",
       "weight": 0.8,
       "keywords": [
-        "Senior Operations Manager",
         "Director of Operations",
-        "Supply Chain Program Manager",
+        "Senior Operations Manager",
         "Director Supply Chain",
+        "Supply Chain Program Manager",
         "Senior Manager Operations",
         "Logistics Program Manager"
       ],
@@ -214,42 +351,135 @@
         "distribution network",
         "last mile",
         "operations lead",
-        "warehouse operations"
+        "warehouse operations",
+        "warehouse management",
+        "warehouse manager",
+        "warehouse director",
+        "warehousing"
       ]
     },
     "motorsport": {
       "label": "F1 / motorsport",
-      "note": "Path 5. Thin volume, lower comp. Surface anything that appears.",
+      "note": "Passion path. Thin volume, lower comp - surface anything that appears. Weight deliberately matches the lead path so a rare F1 role tops the day's list (confirmed intentional 2026-08-17). Liberty Media, which owns F1, is HQ'd in Englewood CO - so these roles can clear CORE geography with no relocation. See company_path_fallback: Liberty Media corporate titles carry no motorsport signal and would otherwise be dropped before scoring.",
       "weight": 1.2,
       "keywords": [
         "Formula 1",
         "Motorsport",
         "Racing Operations",
-        "Motorsports Manager"
+        "Motorsports Manager",
+        "Liberty Media"
       ],
       "title_signals": [
         "formula 1",
         "formula one",
         "motorsport",
+        "motorsports",
         "racing",
         "grand prix",
         "nascar",
-        "indycar"
+        "indycar",
+        "paddock"
+      ]
+    },
+    "media_entertainment": {
+      "label": "Media / entertainment (business + technology side)",
+      "note": "Passion path, added 2026-08-17 so the LA geography gate has something to gate on. Business and technology side only - program, product, systems, and operations roles at studios and streamers. NEVER creative or production-craft roles. Deliberately excludes a bare 'business operations' signal: it would vacuum up generic BizOps roles nationwide, and the LA gate's employer allowlist already covers the TPM-at-a-studio case.",
+      "weight": 1.0,
+      "keywords": [
+        "Studio Technology Program Manager",
+        "Director Studio Operations",
+        "Content Operations Manager",
+        "Director Content Operations",
+        "Media Operations Manager",
+        "Production Technology Manager"
+      ],
+      "title_signals": [
+        "studio technology",
+        "studio operations",
+        "studio system",
+        "studio systems",
+        "content operations",
+        "content system",
+        "content systems",
+        "media operations",
+        "media system",
+        "media systems",
+        "broadcast operations",
+        "production operations"
       ]
     }
   },
-  "seniority": {
-    "boost": [
-      "senior",
-      "sr.",
-      "sr ",
-      "lead",
-      "principal",
-      "staff",
-      "manager",
-      "director",
-      "head of"
+  "company_path_fallback": {
+    "_comment": "When classify_path() finds no title signal, fall back to the employer. Liberty Media posts corporate/commercial roles out of Englewood CO whose titles carry no motorsport signal at all - without this they get matched_path=None and are dropped before scoring, which would hide Dan's most reachable F1 opportunity, the one needing no move. domain_bonus cannot do this job: it only applies AFTER a path is assigned.",
+    "motorsport": [
+      "liberty media",
+      "formula 1",
+      "formula one",
+      "haas f1",
+      "mclaren",
+      "andretti",
+      "nascar",
+      "indycar",
+      "grand prix",
+      "speedway",
+      "raceway"
     ],
+    "media_entertainment": [
+      "netflix",
+      "disney",
+      "warner",
+      "paramount",
+      "sony pictures",
+      "lionsgate",
+      "a24",
+      "hulu",
+      "amc networks"
+    ]
+  },
+  "seniority": {
+    "_comment": "Tiered 2026-08-17 to target Director and Senior Manager. Scored by LONGEST matching term, so 'Associate Manager' does not score as 'manager'. The IC penalty stacks on top of the best positive tier: an IC title lands below report.min_score_to_report in practice but is never hard-rejected, so the call stays reversible and nothing is written to seen.json as settled.",
+    "tiers": {
+      "director": {
+        "points": 2.5,
+        "terms": [
+          "director",
+          "director of",
+          "head of"
+        ]
+      },
+      "senior_manager": {
+        "points": 2.0,
+        "terms": [
+          "senior manager",
+          "sr manager",
+          "sr. manager",
+          "principal"
+        ]
+      },
+      "manager": {
+        "points": 1.0,
+        "terms": [
+          "manager",
+          "senior",
+          "sr.",
+          "sr",
+          "lead",
+          "staff"
+        ]
+      }
+    },
+    "ic_penalty": {
+      "points": -2.5,
+      "terms": [
+        "analyst",
+        "specialist",
+        "coordinator",
+        "associate manager",
+        "assistant manager",
+        "supervisor",
+        "individual contributor"
+      ]
+    },
     "reject": [
       "intern",
       "internship",
@@ -272,6 +502,12 @@
       "c-level",
       "contract to hire",
       "1099",
+      "functional consultant",
+      "sap consultant",
+      "sap configuration",
+      "technical consultant",
+      "abap",
+      "basis administrator",
       "software engineer",
       "engineering manager",
       "data engineer",
@@ -300,6 +536,27 @@
       "controller",
       "tax manager",
       "audit"
+    ]
+  },
+  "employer_penalties": {
+    "_comment": "Score penalty, not a hard drop (2026-08-17). The sap-erp reframe is business-side only, never Big-4 functional practice - but a legitimate non-consulting role at one of these firms should still be visible, just not near the top. Matched against the employer name only, with word boundaries. The travel ceiling in candidate.hard_filters removes most of these outright; this is the backstop for the ones that post under 50%.",
+    "points": -3,
+    "companies": [
+      "deloitte",
+      "accenture",
+      "kpmg",
+      "pwc",
+      "pricewaterhousecoopers",
+      "ernst & young",
+      "ernst and young",
+      "ey",
+      "capgemini",
+      "infosys",
+      "cognizant",
+      "wipro",
+      "tcs",
+      "tata consultancy",
+      "ibm consulting"
     ]
   },
   "domain_bonus": {
@@ -355,7 +612,15 @@
       "andretti",
       "penske",
       "nascar",
-      "indycar"
+      "indycar",
+      "grand prix",
+      "speedway",
+      "raceway",
+      "blue yonder",
+      "manhattan associates",
+      "korber",
+      "körber",
+      "system logistics"
     ],
     "title_words": [
       "gaming",
@@ -409,20 +674,37 @@
       "openai",
       "ramp",
       "linear"
+    ],
+    "lever": [
+      "spotify"
+    ],
+    "workday": [
+      {
+        "_comment": "Verified 2026-08-17: 41 open reqs. Manhattan Associates is the WMS vendor POSITIONING.md names as the strongest Atlanta option.",
+        "company": "Manhattan Associates",
+        "tenant": "manh",
+        "host": "wd5",
+        "site": "External"
+      }
     ]
   },
   "direct_career_sites": {
-    "_comment": "Checked by the skill via WebSearch/WebFetch, not the script - these are non-standard ATSs.",
+    "_comment": "Non-standard ATSs with no public JSON API - checked by the /job-feed skill via WebSearch/WebFetch, NOT by the script. Every org here was probed against Greenhouse, Lever, Ashby, and the obvious Workday tenants on 2026-08-17 and returned 404; they are on SuccessFactors, iCIMS, or custom stacks. Do not re-probe these three ATSs for them - the result is recorded, not unknown. Anything that later gets a working endpoint should move into target_boards.",
     "sites": [
-      "Netflix - explore.jobs.netflix.net",
-      "Spotify - lifeatspotify.com/jobs",
-      "Adobe - careers.adobe.com",
-      "Unity - careers.unity.com",
-      "Liberty Media / FOM - libertymedia.com/careers + formula1.com/en/careers",
+      "Liberty Media / FOM - libertymedia.com/careers + formula1.com/en/careers (Englewood CO HQ; highest-value manual check)",
       "Haas F1 - haasf1team.com/careers",
       "McLaren Racing - mclaren.com/careers",
-      "Autodesk - autodesk.com/careers",
-      "Deloitte / Accenture / IBM / Capgemini - SAP S/4HANA practice roles"
+      "Andretti Global - andretti.com/careers",
+      "NASCAR - careers.nascar.com",
+      "IndyCar / Penske Entertainment - penskeentertainment.com/careers",
+      "Las Vegas GP / Miami GP / COTA (Austin) - event organizations, seasonal",
+      "Blue Yonder - blueyonder.com/careers",
+      "Körber Supply Chain - koerber-supplychain.com/careers",
+      "System Logistics - systemlogistics.com/careers",
+      "Netflix - explore.jobs.netflix.net",
+      "Adobe - careers.adobe.com",
+      "Unity - careers.unity.com",
+      "Autodesk - autodesk.com/careers"
     ]
   },
   "linkedin": {

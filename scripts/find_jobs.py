@@ -64,6 +64,28 @@ def get(url, timeout=25, retries=2):
     return None
 
 
+def post_json(url, body, timeout=25, retries=1):
+    """POST a JSON body, returning decoded text or None. Never raises.
+
+    Workday's job API is POST-only, so get() cannot reach it.
+    """
+    for attempt in range(retries + 1):
+        try:
+            req = urllib.request.Request(url, data=body.encode(), headers={
+                "User-Agent": UA,
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            }, method="POST")
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.read().decode("utf-8", errors="replace")
+        except Exception as exc:  # noqa: BLE001 - a dead source must not kill the run
+            if attempt == retries:
+                log(f"post failed ({type(exc).__name__}) {url[:90]}")
+                return None
+            time.sleep(1.5 * (attempt + 1))
+    return None
+
+
 def job_key(company, title, location=None):
     """Stable identity for a posting across sources (LinkedIn ids churn).
 
@@ -220,28 +242,150 @@ def fetch_ashby(boards):
     return jobs
 
 
+def fetch_lever(boards):
+    jobs = []
+    for board in boards:
+        raw = get(f"https://api.lever.co/v0/postings/{board}?mode=json")
+        if not raw:
+            continue
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        for j in payload:
+            cats = j.get("categories") or {}
+            jobs.append({
+                "title": clean(j.get("text")),
+                "company": board,
+                "location": clean(cats.get("location", "")),
+                "url": j.get("hostedUrl", ""),
+                # createdAt is epoch milliseconds.
+                "posted": (datetime.fromtimestamp(j["createdAt"] / 1000, timezone.utc)
+                           .strftime("%Y-%m-%d") if j.get("createdAt") else ""),
+                "source": "Lever",
+                "matched_path": None,
+                "matched_kw": None,
+            })
+        time.sleep(0.3)
+    return jobs
+
+
+def fetch_workday(boards):
+    """Workday's CxS endpoint. POST-only, paginated, 20 per page.
+
+    Most of the orgs in FEED_UPDATE_SPEC §4 (Liberty Media, the F1 teams, Blue
+    Yonder, Körber) are NOT here - they were probed against Greenhouse, Lever,
+    Ashby and Workday on 2026-08-17 and 404'd on all four. See
+    config.direct_career_sites; those stay a manual check by the skill.
+    """
+    jobs = []
+    for board in boards:
+        tenant, site = board["tenant"], board["site"]
+        host = board.get("host", "wd1")
+        company = board.get("company", tenant)
+        url = f"https://{tenant}.{host}.myworkdayjobs.com/wday/cxs/{tenant}/{site}/jobs"
+        offset = 0
+        while offset < 200:  # a board this size never legitimately exceeds this
+            body = json.dumps({"limit": 20, "offset": offset, "searchText": ""})
+            raw = post_json(url, body)
+            if not raw:
+                break
+            try:
+                payload = json.loads(raw)
+            except json.JSONDecodeError:
+                break
+            postings = payload.get("jobPostings") or []
+            if not postings:
+                break
+            for j in postings:
+                path = j.get("externalPath") or ""
+                jobs.append({
+                    "title": clean(j.get("title")),
+                    "company": company,
+                    "location": clean(j.get("locationsText", "")),
+                    "url": (f"https://{tenant}.{host}.myworkdayjobs.com/en-US/{site}{path}"
+                            if path else ""),
+                    # postedOn is relative prose ("Posted 3 Days Ago"), not a date.
+                    # Leave it blank rather than invent a timestamp.
+                    "posted": "",
+                    "source": "Workday",
+                    "matched_path": None,
+                    "matched_kw": None,
+                })
+            offset += 20
+            if offset >= payload.get("total", 0):
+                break
+            time.sleep(0.4)
+    return jobs
+
+
 # ---------------------------------------------------------------- filtering
 
-def location_ok(job, cfg):
-    """True if the role is US-remote, in Colorado, or in the Denver metro."""
+def location_verdict(job, cfg):
+    """Classify a role's location into a geo tier. Returns (tier_name, flag).
+
+    Returns (None, None) to exclude. Replaces the old boolean location_ok():
+    "Denver or remote, no relocation" became a tiered model on 2026-08-17.
+
+      core     - remote (US), Colorado, Denver metro. Hybrid/on-site included on
+                 purpose; Dan wants an office.
+      relocate - Atlanta, San Diego. Included but flagged, so the cost is visible.
+      passion  - F1 cities and LA. Only worth a move for the right kind of role,
+                 so each gate requires a matching path OR a matching employer.
+
+    The employer half of a passion gate is not redundant. "Technical Program
+    Manager, Studio Technology" classifies as product_program under longest-match,
+    so gating LA on path alone would exclude exactly the roles that make LA worth
+    considering at all.
+    """
     lf = cfg["location_filters"]
+    tiers = lf["geo_tiers"]
     loc = (job.get("location") or "").lower()
     title = (job.get("title") or "").lower()
+    company = (job.get("company") or "").lower()
     blob = f"{loc} {title}"
 
     if any(m in blob for m in lf["reject_markers"]):
-        return False
+        return None, None
     # Non-US postings frequently say "Remote" too - drop them before that check.
+    core = tiers["core"]
+
+    def in_core_state():
+        # Matches both the spelled-out name and the ", CO" postal form.
+        for st in core.get("states", []):
+            if has_word(st, loc):
+                return True
+            if len(st) == 2 and re.search(rf",\s*{re.escape(st.lower())}\b", loc):
+                return True
+        return False
+
     if any(has_word(c, loc) for c in lf["reject_countries"]):
-        if not (has_word("colorado", loc) or re.search(r",\s*co\b", loc)):
-            return False
-    if any(m in loc for m in lf["allow_metros"]):
-        return True
-    if has_word("colorado", loc) or re.search(r",\s*co\b", loc):
-        return True
-    if lf["allow_remote"] and is_remote(loc, title, lf):
-        return True
-    return False
+        if not in_core_state():
+            return None, None
+
+    if any(m in loc for m in core["metros"]):
+        return "core", core.get("flag")
+    if in_core_state():
+        return "core", core.get("flag")
+    if core.get("allow_remote", True) and is_remote(loc, title, lf):
+        return "core", core.get("flag")
+
+    relo = tiers["relocate"]
+    if any(m in loc for m in relo["metros"]):
+        return "relocate", relo.get("flag")
+
+    passion = tiers["passion"]
+    for gate in passion["gates"]:
+        if not any(m in loc for m in gate["metros"]):
+            continue
+        if job.get("matched_path") in gate["paths"]:
+            return "passion", passion.get("flag")
+        if any(has_word(c, company) for c in gate["companies"]):
+            return "passion", passion.get("flag")
+        # In one of these cities but not for a reason worth moving for.
+        return None, None
+
+    return None, None
 
 
 def is_remote(loc, title, lf):
@@ -264,14 +408,35 @@ def seniority_ok(job, cfg):
 
 
 def classify_path(job, cfg):
-    """Assign a job to the path whose title signals it matches most specifically."""
+    """Assign a job to the path whose title signals it matches most specifically.
+
+    Longest match wins, and that is load-bearing rather than incidental: it is what
+    keeps "Warehouse Management System Manager" in warehouse_systems while
+    "Warehouse Manager" stays in ops_leadership. Adding a short signal that
+    overlaps a longer one in another path will silently re-route roles.
+    """
     t = (job.get("title") or "").lower()
     best, best_len = None, 0
     for path_id, path in cfg["paths"].items():
         for sig in path["title_signals"]:
             if has_word(sig, t) and len(sig) > best_len:
                 best, best_len = path_id, len(sig)
-    return best
+    if best:
+        return best
+
+    # Fall back to the employer. Liberty Media (F1's owner, HQ'd in Englewood CO)
+    # posts corporate and commercial roles whose titles carry no motorsport signal
+    # whatsoever - "Director, Commercial Operations" matches nothing. Without this
+    # they get matched_path=None and are dropped before scoring, which would hide
+    # the most reachable F1 opportunity Dan has, the one needing no relocation.
+    # domain_bonus cannot cover this: it only applies after a path is assigned.
+    company = (job.get("company") or "").lower()
+    for path_id, companies in cfg.get("company_path_fallback", {}).items():
+        if path_id.startswith("_") or path_id not in cfg["paths"]:
+            continue
+        if any(has_word(c, company) for c in companies):
+            return path_id
+    return None
 
 
 # ---------------------------------------------------------------- scoring
@@ -294,15 +459,42 @@ def score(job, cfg):
 
     path = cfg["paths"][path_id]
     hits = [s for s in path["title_signals"] if has_word(s, title)]
-    if not hits:
-        return 0.0, ["path signal did not survive word-boundary check"]
+    if hits:
+        pts += 4 * path["weight"]
+        why.append(f"{path['label']} — “{hits[0].strip()}”")
+    else:
+        # No title signal, so the path came from the employer fallback in
+        # classify_path(). Re-checking signals here would score every one of those
+        # roles 0.0 and undo the fallback entirely - which is exactly what happened
+        # to "Director, Commercial Operations" at Liberty Media in testing.
+        fallback = cfg.get("company_path_fallback", {}).get(path_id, [])
+        if not any(has_word(c, company) for c in fallback):
+            return 0.0, ["path signal did not survive word-boundary check"]
+        pts += 4 * path["weight"]
+        why.append(f"{path['label']} — employer match, not title")
 
-    pts += 4 * path["weight"]
-    why.append(f"{path['label']} — “{hits[0].strip()}”")
+    # Seniority is tiered as of 2026-08-17: Dan is at the ceiling of the manager
+    # band doing manager-of-managers work, so the feed aims a level up. Longest
+    # match wins, which is what stops "Associate Manager" scoring as "manager".
+    sen = cfg["seniority"]
+    best_tier, best_len = None, 0
+    for tier_name, tier in sen["tiers"].items():
+        for term in tier["terms"]:
+            if has_word(term, title) and len(term) > best_len:
+                best_tier, best_len = tier_name, len(term)
+    if best_tier:
+        pts += sen["tiers"][best_tier]["points"]
+        why.append(f"seniority: {best_tier.replace('_', ' ')}")
 
-    if any(has_word(b, title) for b in cfg["seniority"]["boost"]):
-        pts += 1
-        why.append("right seniority")
+    # Stacks on top of the tier rather than replacing it, so an IC title lands
+    # below min_score_to_report without ever being hard-rejected. Dan chose
+    # down-weight over drop specifically to keep this reversible.
+    ic = sen.get("ic_penalty")
+    if ic:
+        ic_hit = next((t for t in ic["terms"] if has_word(t, title)), None)
+        if ic_hit:
+            pts += ic["points"]
+            why.append(f"individual-contributor signal: {ic_hit}")
 
     db = cfg["domain_bonus"]
     hit = next((c for c in db["companies"] if has_word(c, company)), None)
@@ -315,17 +507,32 @@ def score(job, cfg):
             pts += 1.5
             why.append(f"domain of interest: {tw}")
 
-    if any(m in loc for m in cfg["location_filters"]["allow_metros"]):
-        pts += 1.5
-        why.append("Denver metro")
-    elif any(has_word(m, f"{loc} {title}") for m in cfg["location_filters"]["remote_markers"]):
-        pts += 1
-        why.append("remote")
+    # Big-4 SAP practice roles. A penalty, not a drop - a legitimate non-consulting
+    # role at one of these firms should still be visible, just not near the top.
+    ep = cfg.get("employer_penalties")
+    if ep:
+        ep_hit = next((c for c in ep["companies"] if has_word(c, company)), None)
+        if ep_hit:
+            pts += ep["points"]
+            why.append(f"consulting practice: {ep_hit}")
 
-    # What Dan can actually prove on paper today, per the 2025 resumes.
+    tier = job.get("geo_tier")
+    if tier:
+        adj = cfg["location_filters"]["geo_tiers"][tier].get("score_adj", 0)
+        if adj:
+            pts += adj
+        label = {"core": "core geography", "relocate": "would require relocating",
+                 "passion": "passion-track city"}.get(tier, tier)
+        why.append(label)
+
+    # What Dan can prove on paper after the 2026-08-16 rebuild. Tableau and Power BI
+    # came out with the analytics path; SQL stays, because it is a real skill and it
+    # helps systems and TPM roles score. "transformation" came out too - it was
+    # pulling the Big-4 functional roles the sap-erp reframe exists to avoid.
     proof = ["sap", "erp", "s/4hana", "s4hana", "deployment", "warehouse", "wms",
-             "supply chain", "tableau", "sql", "power bi", "readiness", "cutover",
-             "logistics", "distribution", "transformation"]
+             "warehouse systems", "supply chain", "sql", "readiness", "cutover",
+             "release", "product owner", "backlog", "uat", "governance",
+             "logistics", "distribution"]
     proof_hits = [p for p in proof if has_word(p, title)]
     if proof_hits:
         pts += 1.5
@@ -509,6 +716,16 @@ def money(v):
     return f"${v:,.0f}" if v else "—"
 
 
+def location_cell(job):
+    """Location with a 🧳 marker when taking the role would mean moving.
+
+    Rendered inline rather than as its own column: notify_email.py passes the
+    markdown table through as-is, so a column change risks the email layout.
+    """
+    loc = job.get("location") or "not stated"
+    return f"{loc} 🧳" if job.get("geo_flag") == "relocation" else loc
+
+
 def salary_cell(job, floor, target):
     lo, hi = job.get("salary_lo"), job.get("salary_hi")
     if not lo:
@@ -540,10 +757,11 @@ def write_report(jobs, cfg, first_run, stats):
     lines.append(f"# Job feed — {datetime.now().strftime('%A, %B %-d, %Y')}")
     lines.append("")
     window = "last 14 days (first run)" if first_run else "last 24 hours"
+    geo = "remote/Denver core · Atlanta & San Diego flagged 🧳"
     bar = (f"comp posted and topping out at {money(floor)}+ · "
-           f"Denver metro or remote · travel ≤{cfg['candidate']['max_travel_pct']}%")
+           f"{geo} · travel ≤{cfg['candidate']['max_travel_pct']}%")
     if stats.get("filters_skipped"):
-        bar = (f"Denver metro or remote · **comp and travel filters skipped** "
+        bar = (f"{geo} · **comp and travel filters skipped** "
                f"(run without detail fetches — figures below are unverified)")
     lines.append(f"*{len(jobs)} new roles matched* · window: {window} · {bar}")
     lines.append("")
@@ -613,7 +831,7 @@ def write_report(jobs, cfg, first_run, stats):
         lines.append(f"### {j['title']} — {j['company'].title()}")
         lines.append("")
         lines.append(f"- **Path:** {label}")
-        lines.append(f"- **Location:** {j['location'] or 'not stated'}")
+        lines.append(f"- **Location:** {location_cell(j)}")
         lines.append(f"- **Comp:** {salary_cell(j, floor, target)}")
         if j.get("travel_pct") is not None:
             ceiling = cfg["candidate"]["max_travel_pct"]
@@ -636,7 +854,7 @@ def write_report(jobs, cfg, first_run, stats):
             short = label.split("(")[0].split("/")[0].strip()
             title = f"[{j['title']}]({j['url']})" if j["url"] else j["title"]
             lines.append(f"| {j['score']} | {title} | {j['company'].title()} | "
-                         f"{j['location'] or '—'} | {salary_cell(j, floor, target)} | {short} |")
+                         f"{location_cell(j)} | {salary_cell(j, floor, target)} | {short} |")
         lines.append("")
 
     lines.append("## By path")
@@ -647,9 +865,9 @@ def write_report(jobs, cfg, first_run, stats):
     lines.append("")
     lines.append("---")
     lines.append("")
-    lines.append("<sub>✅ clears target · ⚠️ between floor and target · "
-                 "every role here posts a range that tops out at or above your floor "
-                 "and sits inside your travel ceiling.</sub>")
+    lines.append("<sub>✅ clears target · ⚠️ between floor and target · 🧳 would mean "
+                 "relocating · every role here posts a range that tops out at or above "
+                 "your floor and sits inside your travel ceiling.</sub>")
 
     with open(path, "w") as f:
         f.write("\n".join(lines))
@@ -691,9 +909,12 @@ def main():
     raw = fetch_linkedin(cfg, tpr)
     log(f"LinkedIn: {len(raw)} raw")
 
+    tb = cfg["target_boards"]
     board_jobs = []
-    board_jobs += fetch_greenhouse(cfg["target_boards"]["greenhouse"])
-    board_jobs += fetch_ashby(cfg["target_boards"]["ashby"])
+    board_jobs += fetch_greenhouse(tb["greenhouse"])
+    board_jobs += fetch_ashby(tb["ashby"])
+    board_jobs += fetch_lever(tb.get("lever", []))
+    board_jobs += fetch_workday(tb.get("workday", []))
     log(f"Company boards: {len(board_jobs)} raw")
 
     raw_all = raw + board_jobs
@@ -703,8 +924,9 @@ def main():
         j["matched_path"] = classify_path(j, cfg)
     raw_all = [j for j in raw_all if j["matched_path"]]
 
-    stats = {"raw": len(raw) + len(board_jobs), "boards": len(cfg["target_boards"]["greenhouse"])
-             + len(cfg["target_boards"]["ashby"]),
+    stats = {"raw": len(raw) + len(board_jobs),
+             "boards": (len(tb["greenhouse"]) + len(tb["ashby"])
+                        + len(tb.get("lever", [])) + len(tb.get("workday", []))),
              "linkedin_raw": len(raw), "board_raw": len(board_jobs),
              # LinkedIn silently returning zero while the boards work means the IP
              # is blocked, not that the market is quiet. Runs on cloud IPs are the
@@ -716,9 +938,11 @@ def main():
 
     kept, keys = [], set()
     for j in raw_all:
-        if not location_ok(j, cfg):
+        tier, flag = location_verdict(j, cfg)
+        if not tier:
             stats["dropped_loc"] += 1
             continue
+        j["geo_tier"], j["geo_flag"] = tier, flag
         if not seniority_ok(j, cfg):
             stats["dropped_sen"] += 1
             continue
