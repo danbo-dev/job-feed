@@ -78,16 +78,37 @@ in a targeted replay. All three lead-path roles in core geography were killed by
 | EchoStar — Lead Product Owner, SC Technology | 8.8 | $96–137K, under the floor |
 | RF-SMART — Senior Product Director, NetSuite WMS | **10.3** | **no posted comp** |
 
-**`require_posted_comp` is now the binding constraint on the lead path.** 16 of 65
-scored roles were dropped for no posted range this run. The third row is the cost made
-concrete: the single best-scoring lead-path role was invisible purely because the
-employer published no salary. That is Dan's toggle to loosen
-(`config.candidate.hard_filters`), not one to change unilaterally — but if the lead
-path keeps coming back empty, this is the reason, not the tuning.
+`require_posted_comp` was the binding constraint on the lead path — 16 of 65 scored
+roles dropped for no posted range. **Dan loosened it the same day** (below).
 
-A useful follow-up if it recurs: break the "scoring roles were filtered out" line down
-**by path**, so a lead-path role lost to a missing salary is visible rather than
-folded into an aggregate count.
+A useful follow-up if the lead path still comes back thin: break the "scoring roles
+were filtered out" line down **by path**, so a lead-path role lost to a missing salary
+is visible rather than folded into an aggregate count.
+
+### The no-comp score exemption (2026-08-17, Dan's call)
+
+`hard_filters.no_comp_score_exemption: 9.0`. A role scoring at or above it comes
+through **without a posted range**, marked ❓ in the report; everything below it still
+requires one. The RF-SMART row above is exactly what this recovers.
+
+Calibration matters here — the number is only meaningful against the scale. Report
+threshold is **7.0**, practical ceiling is **13.3** (4.8 path + 2.5 director + 3.0
+target company + 1.5 core geo + 1.5 proof). At 9.0 the bar is deliberately high: only
+**3 of the 37** roles in the 2026-08-17 run cleared it. Set it to `null` to require
+comp on everything again.
+
+**It is an exemption, not a bypass.** Deliberately still enforced on high scorers:
+
+| Case | Outcome |
+|---|---|
+| No range posted, score ≥ 9.0 | **kept**, marked ❓ |
+| Posted range topping out below the floor | dropped — a *missing* range is forgivable, a *too-low* one is not |
+| Travel over the ceiling | dropped — the exemption never overrides it |
+| Detail page never loaded | held for the next run, as always — no evidence is not a verdict |
+
+The report says so out loud rather than letting ❓ pass as checked: a "not posted"
+salary that had never been tested against the floor would otherwise read exactly like
+one that had.
 
 ### Geography — three tiers
 

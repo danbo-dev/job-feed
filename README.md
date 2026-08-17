@@ -70,6 +70,13 @@ set as repository secrets:
 | `COMP_FLOOR` | A role whose range tops out below this is dropped, not demoted |
 | `COMP_TARGET` | At or above this, it's marked ✅ |
 
+**No-comp score exemption.** Plenty of employers publish no salary range, and dropping
+on that alone hid a top-scoring role on the first tuned run. A role scoring at or above
+`hard_filters.no_comp_score_exemption` (9.0, against a 7.0 report threshold and a 13.3
+practical ceiling) now surfaces unpriced, marked ❓ and called out in the report as
+unverified. It is not a general bypass: a posted range *below* the floor, travel over
+the ceiling, and an unread detail page all still drop or hold the role.
+
 Each falls back to `config.json` when unset, so it also runs locally.
 
 ## Run it

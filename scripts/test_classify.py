@@ -92,6 +92,48 @@ CASES = [
 ]
 
 
+# Hard-filter cases. The no-comp score exemption (2026-08-17) lets a strong role
+# through without a posted range — but it must not become a general bypass: the
+# travel ceiling, the below-floor rule, and the unread hold all still apply.
+# label, job fields, expected outcome ("kept", "exempt", or a dropped_by reason)
+FILTER_CASES = [
+    ("high score, no comp — the RF-SMART case", {"score": 10.3, "read": True}, "exempt"),
+    ("exactly at the exemption bar", {"score": 9.0, "read": True}, "exempt"),
+    ("just under the bar", {"score": 8.9, "read": True}, "no_comp"),
+    # A missing range is forgivable; a posted range that is too low is not.
+    ("high score, posted range below floor",
+     {"score": 11.0, "read": True, "salary_lo": 90000, "salary_hi": 120000}, "below_floor"),
+    # The exemption must never override the travel ceiling.
+    ("high score, no comp, 80% travel",
+     {"score": 11.0, "read": True, "travel_pct": 80}, "travel"),
+    # Never read is not evidence of anything — still held for the next run.
+    ("high score, page never loaded", {"score": 12.0}, "unread"),
+    ("ordinary role with good comp",
+     {"score": 7.5, "read": True, "salary_lo": 160000, "salary_hi": 200000}, "kept"),
+]
+
+
+def check_filters(cfg):
+    failures = []
+    print()
+    print("hard filters")
+    print("-" * 88)
+    for label, fields, want in FILTER_CASES:
+        job = dict(title="X", company="Y", **fields)
+        stats = {k: 0 for k in ("dropped_no_comp", "dropped_below_floor",
+                                "dropped_travel", "dropped_unread", "kept_no_comp")}
+        kept = fj.apply_hard_filters([job], cfg, stats)
+        if kept:
+            got = "exempt" if job.get("comp_exempt") else "kept"
+        else:
+            got = job.get("dropped_by")
+        ok = got == want
+        if not ok:
+            failures.append((label, f"got={got} want={want}"))
+        print(f"{label:<52} {got:<12}{'' if ok else '  <-- want ' + want}")
+    return failures
+
+
 def main():
     cfg = json.load(open(os.path.join(ROOT, "config.json")))
     # Mirrors the GitHub secrets; the placeholders in config.json are zeros.
@@ -125,12 +167,19 @@ def main():
               f"{str(tier):<9} {pts:>5.1f} {'yes' if reports else '—':>4}{mark}")
 
     print("-" * 88)
-    if failures:
-        print(f"FAILED: {len(failures)} of {len(CASES)}")
+
+    filter_failures = check_filters(cfg)
+    print("-" * 88)
+
+    total = len(CASES) + len(FILTER_CASES)
+    if failures or filter_failures:
+        print(f"FAILED: {len(failures) + len(filter_failures)} of {total}")
         for title, company, problems in failures:
             print(f"  {title} @ {company}: {'; '.join(problems)}")
+        for label, problem in filter_failures:
+            print(f"  {label}: {problem}")
         return 1
-    print(f"PASSED: all {len(CASES)} cases")
+    print(f"PASSED: all {total} cases")
     return 0
 
 

@@ -8,7 +8,9 @@
     "max_travel_pct": 50,
     "_hard_filters_comment": "These drop roles from the report entirely rather than just demoting their score. A role is only dropped on evidence: the detail page must have been fetched and read. Anything unread is held back for the next run, never silently discarded. The travel ceiling is load-bearing for the 2026-08-16 SAP reframe - Big-4 functional practice roles are the 40-80% travel ones, and this is what actually removes them.",
     "hard_filters": {
+      "_no_comp_exemption_comment": "Added 2026-08-17 at Dan's request. require_posted_comp was hiding strong roles for no reason but the employer's pay-transparency habits - the first live run dropped a 10.3-scoring lead-path role (Senior Product Director, NetSuite WMS) purely because no range was posted. A role scoring at or above this threshold now comes through WITHOUT a posted range and is marked 'not posted' in the report; everything below it still requires one. Calibration: the report threshold is 7.0 and the practical ceiling is 13.3, so 9.0 is deliberately selective - only 3 of the 37 roles in the 2026-08-17 run cleared it. Set to null to require comp on everything again.",
       "require_posted_comp": true,
+      "no_comp_score_exemption": 9.0,
       "require_high_end_above_floor": true,
       "enforce_travel_ceiling": true
     }

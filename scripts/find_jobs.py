@@ -693,9 +693,17 @@ def apply_hard_filters(jobs, cfg, stats):
             continue
         top = j.get("salary_hi") or j.get("salary_lo")
         if hf.get("require_posted_comp", True) and not top:
-            j["dropped_by"] = "no_comp"
-            stats["dropped_no_comp"] += 1
-            continue
+            # A strong enough role is worth seeing even unpriced. Plenty of
+            # employers simply don't publish a range, and dropping on that alone
+            # cost a 10.3-scoring lead-path role on the first live run.
+            exempt_at = hf.get("no_comp_score_exemption")
+            if exempt_at is not None and j.get("score", 0) >= exempt_at:
+                j["comp_exempt"] = True
+                stats["kept_no_comp"] += 1
+            else:
+                j["dropped_by"] = "no_comp"
+                stats["dropped_no_comp"] += 1
+                continue
         if hf.get("require_high_end_above_floor", True) and top and top < floor:
             j["dropped_by"] = "below_floor"
             stats["dropped_below_floor"] += 1
@@ -729,7 +737,9 @@ def location_cell(job):
 def salary_cell(job, floor, target):
     lo, hi = job.get("salary_lo"), job.get("salary_hi")
     if not lo:
-        return "not posted"
+        # Scored high enough to surface without a posted range. Say so plainly -
+        # "not posted" alone reads like the filters checked it and it passed.
+        return "not posted ❓" if job.get("comp_exempt") else "not posted"
     rng = money(lo) if lo == hi else f"{money(lo)}–{money(hi)}"
     top = hi or lo
     if top >= target:
@@ -758,8 +768,10 @@ def write_report(jobs, cfg, first_run, stats):
     lines.append("")
     window = "last 14 days (first run)" if first_run else "last 24 hours"
     geo = "remote/Denver core · Atlanta & San Diego flagged 🧳"
-    bar = (f"comp posted and topping out at {money(floor)}+ · "
-           f"{geo} · travel ≤{cfg['candidate']['max_travel_pct']}%")
+    exempt_at = cfg["candidate"]["hard_filters"].get("no_comp_score_exemption")
+    comp_bar = (f"comp posted and topping out at {money(floor)}+"
+                + (f" (or scoring {exempt_at}+ unpriced)" if exempt_at is not None else ""))
+    bar = f"{comp_bar} · {geo} · travel ≤{cfg['candidate']['max_travel_pct']}%"
     if stats.get("filters_skipped"):
         bar = (f"{geo} · **comp and travel filters skipped** "
                f"(run without detail fetches — figures below are unverified)")
@@ -785,6 +797,16 @@ def write_report(jobs, cfg, first_run, stats):
                      f"{stats['dropped_travel']} exceeded your "
                      f"{cfg['candidate']['max_travel_pct']}% travel ceiling. "
                      f"Loosen these in `config.candidate.hard_filters`.</sub>")
+        lines.append("")
+    if stats.get("kept_no_comp"):
+        exempt_at = cfg["candidate"]["hard_filters"].get("no_comp_score_exemption")
+        n_ex = stats["kept_no_comp"]
+        noun = "role posted" if n_ex == 1 else "roles posted"
+        pron = "it has" if n_ex == 1 else "they have"
+        lines.append(f"<sub>**{n_ex} {noun} no salary range** but scored {exempt_at}+ and "
+                     f"came through anyway, marked ❓. Comp is unverified — {pron} not "
+                     f"been checked against your {money(floor)} floor. Tighten via "
+                     f"`config.candidate.hard_filters.no_comp_score_exemption`.</sub>")
         lines.append("")
     if stats.get("dropped_unread"):
         lines.append(f"<sub>{stats['dropped_unread']} roles could not be opened to "
@@ -865,9 +887,10 @@ def write_report(jobs, cfg, first_run, stats):
     lines.append("")
     lines.append("---")
     lines.append("")
-    lines.append("<sub>✅ clears target · ⚠️ between floor and target · 🧳 would mean "
-                 "relocating · every role here posts a range that tops out at or above "
-                 "your floor and sits inside your travel ceiling.</sub>")
+    lines.append("<sub>✅ clears target · ⚠️ between floor and target · ❓ no range "
+                 "posted, surfaced on score alone (comp unverified) · 🧳 would mean "
+                 "relocating · everything else here posts a range that tops out at or "
+                 "above your floor, and all of it sits inside your travel ceiling.</sub>")
 
     with open(path, "w") as f:
         f.write("\n".join(lines))
@@ -934,7 +957,7 @@ def main():
              "degraded": len(raw) == 0 and len(board_jobs) > 0,
              "dropped_loc": 0, "dropped_sen": 0, "dropped_seen": 0,
              "dropped_no_comp": 0, "dropped_below_floor": 0, "dropped_travel": 0,
-             "dropped_unread": 0, "filters_skipped": False}
+             "dropped_unread": 0, "kept_no_comp": 0, "filters_skipped": False}
 
     kept, keys = [], set()
     for j in raw_all:
