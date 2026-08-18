@@ -24,9 +24,13 @@ Runs on GitHub Actions. No auth, no scraping logins, no paid APIs.
 4. **Enriches** — fetches each match's detail page for the posted salary range and
    travel percentage, then drops anything under the floor or over the travel
    ceiling.
-5. **Dedupes** — against `data/seen.json`, keyed on company + title so one req
+5. **Gates on domain** — re-reads the description and cuts roles that match on
+   keywords but are anchored to a specialist domain outside the target lane (an
+   off-lane SAP tower, or a FAR/DFARS compliance-SME requirement). Keyword density
+   alone cannot catch these; see `CLAUDE.md` → "SAP lane discipline".
+6. **Dedupes** — against `data/seen.json`, keyed on company + title so one req
    posted to five cities is reported once and never repeats.
-6. **Emails** — the report as inline-styled HTML.
+7. **Emails** — the report as inline-styled HTML.
 
 ## Career paths (retuned 2026-08-17)
 
@@ -115,6 +119,9 @@ the delivery channel.
 
 ## Notes
 
+- `regulated_domain_gate.acronyms` are matched **case-sensitively**. `FAR` matched
+  case-insensitively hits the ordinary English "far" in nearly every job description
+  written, which would gate the entire feed.
 - Uses `html.parser`, not `lxml` — one fewer build dependency.
 - Salary parsing only reads figures near a compensation cue. Job pages are full of
   unrelated dollar amounts, and "$200M in property" from a résumé bullet otherwise

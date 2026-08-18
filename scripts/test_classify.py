@@ -139,6 +139,95 @@ LEVEL_CASES = [
 ]
 
 
+# Lane discipline (2026-08-18). The RTX regression: a posting dense in Dan's real
+# keywords — Sr Manager, SAP, S/4HANA, ERP transformation, UAT, change management,
+# warehousing, inventory, remote — that scored 9.0 but whose must-have is
+# government-property / FAR-DFARS SME, a domain he has never worked in. Keyword
+# density cannot catch it; the SAP tower named in the title can.
+# title, max acceptable score (None = must stay ABOVE the report threshold)
+LANE_CASES = [
+    # The fixture. Assertion from the regression writeup: must land <= 4.
+    ("Sr. Manager SAP Property Management Transformation (Remote)", 4.0),
+    ("SAP Payroll Transformation Manager", 4.0),
+    ("SAP Finance Transformation Director", 4.0),
+    ("Director, SAP SuccessFactors HCM", 4.0),
+    ("Manager, SAP Real Estate (RE-FX)", 4.0),
+    # Do NOT over-correct — these are Dan's actual lane and must stay reportable.
+    ("SAP Program Manager", None),
+    ("SAP Deployment Manager, S/4HANA Site Readiness", None),
+    ("ERP Program Manager, Warehouse Deployment", None),
+    ("Director, S/4HANA Cutover and Release Governance", None),
+    # An off-lane tower alongside an in-lane term is a real fit, not a gate.
+    ("SAP Warehouse and Finance Integration Manager", None),
+]
+
+
+# Body-text gate. Verified against the live RTX posting on 2026-08-18 (it hits FAR,
+# DFARS and "government property"); the text below is representative so the suite
+# stays network-free. The false-positive case is the important one: "FAR" matched
+# case-INSENSITIVELY hits the ordinary English "far" in nearly every job description
+# written, which would gate the whole feed.
+# label, body text, should the gate fire?
+GATE_CASES = [
+    ("RTX-style government property SME",
+     "Serve as the primary subject matter expert for government property. Ensure "
+     "compliance with FAR and DFARS requirements and property management controls.",
+     True),
+    ("defense ERP role, multiple markers",
+     "Support ERP deployment across programs subject to ITAR and DFARS controls, "
+     "including government-furnished equipment.", True),
+    ("ordinary English 'far' — must NOT fire",
+     "This role goes far beyond traditional WMS work. You will travel as far as "
+     "needed for far-reaching impact. So far our team has shipped three releases.",
+     False),
+    ("single passing ITAR mention — must NOT fire",
+     "Program Manager for supply chain. Some products are subject to ITAR "
+     "restrictions.", False),
+    ("clean in-lane posting", "Own warehouse execution systems, UAT strategy and "
+     "release governance for a national distribution network.", False),
+]
+
+
+def check_gates(cfg):
+    failures = []
+    gate = cfg["regulated_domain_gate"]
+    print()
+    print("regulated-domain body gate")
+    print("-" * 88)
+    for label, text, want in GATE_CASES:
+        hits = fj.regulated_domain_hits(text, gate)
+        got = len(hits) >= gate["min_hits"]
+        ok = got == want
+        if not ok:
+            failures.append((label, f"fired={got} want={want} hits={hits}"))
+        print(f"{label:<52} {'gated' if got else 'clear':<10}"
+              f"{','.join(sorted(set(hits))[:3]):<24}{'' if ok else '  <-- FAIL'}")
+    return failures
+
+
+def check_lanes(cfg):
+    failures = []
+    floor = cfg["report"]["min_score_to_report"]
+    print()
+    print("SAP lane discipline")
+    print("-" * 88)
+    for title, cap in LANE_CASES:
+        job = {"title": title, "company": "Acme Corp", "location": "Denver, CO"}
+        job["matched_path"] = fj.classify_path(job, cfg)
+        job["geo_tier"], job["geo_flag"] = fj.location_verdict(job, cfg)
+        pts, _ = fj.score(job, cfg)
+        if cap is None:
+            ok = pts >= floor
+            want = f">= {floor} (in lane)"
+        else:
+            ok = pts <= cap
+            want = f"<= {cap} (off lane)"
+        if not ok:
+            failures.append((title, f"score={pts} want {want}"))
+        print(f"{title[:56]:<58} {pts:>5.1f}  {want:<20}{'' if ok else '  <-- FAIL'}")
+    return failures
+
+
 def check_levels(cfg):
     failures = []
     print()
@@ -210,14 +299,21 @@ def main():
 
     print("-" * 88)
 
+    lane_failures = check_lanes(cfg)
+    print("-" * 88)
+
+    gate_failures = check_gates(cfg)
+    print("-" * 88)
+
     level_failures = check_levels(cfg)
     print("-" * 88)
 
     filter_failures = check_filters(cfg)
     print("-" * 88)
 
-    total = len(CASES) + len(LEVEL_CASES) + len(FILTER_CASES)
-    all_extra = level_failures + filter_failures
+    total = (len(CASES) + len(LANE_CASES) + len(GATE_CASES) + len(LEVEL_CASES)
+             + len(FILTER_CASES))
+    all_extra = lane_failures + gate_failures + level_failures + filter_failures
     if failures or all_extra:
         print(f"FAILED: {len(failures) + len(all_extra)} of {total}")
         for title, company, problems in failures:

@@ -307,6 +307,54 @@
         "Site Readiness Lead",
         "Release Governance Manager"
       ],
+      "lane": {
+        "_comment": "SAP lane discipline, added 2026-08-18 after the RTX 'Sr. Manager SAP Property Management Transformation' regression. That posting is legitimately dense in Dan's real keywords (S/4HANA, ERP transformation, UAT, change management, warehousing, inventory, Sr Manager, remote) and scored 9.0 — but its core must-have is government-property / FAR-DFARS SME, a domain he has zero experience in. Keyword density cannot catch that; the SAP tower named in the title can.",
+        "_scope_comment": "The penalty fires only when an off-lane tower is named AND no in-lane term appears. Deliberately NOT the literal 'require in-lane co-occurrence for any SAP credit' rule: 'SAP Program Manager' — Dan's own former title — contains no in-lane term either, and that rule would drop it from 8.0 to 4.5 and bury it. Neutral SAP titles keep full credit and are policed at the body level by regulated_domain_gate instead. Two layers, each catching what the other cannot.",
+        "in_lane_terms": [
+          "warehouse",
+          "warehousing",
+          "distribution",
+          "supply chain",
+          "order to cash",
+          "order-to-cash",
+          "otc",
+          "last mile",
+          "site readiness",
+          "readiness",
+          "deployment",
+          "cutover",
+          "master data",
+          "logistics",
+          "fulfillment",
+          "inventory",
+          "wms",
+          "ewm"
+        ],
+        "off_lane_towers": [
+          "property management",
+          "real estate",
+          "re-fx",
+          "refx",
+          "payroll",
+          "hcm",
+          "human resources",
+          "human capital",
+          "successfactors",
+          "fico",
+          "finance",
+          "financial",
+          "tax",
+          "treasury",
+          "ariba",
+          "sap procurement",
+          "sap security",
+          "sap basis",
+          "grc",
+          "crm"
+        ],
+        "off_lane_penalty": -3.0,
+        "off_lane_weight_factor": 0.5
+      },
       "_signal_length_comment": "The multi-word forms are mandatory, not redundant. classify_path() resolves by LONGEST match, so bare 'sap' (3 chars) loses to product_program's 'program manager' (15) - which sent every 'SAP Program Manager', Dan's single most common target title, into the wrong path until this was caught in testing 2026-08-17.",
       "title_signals": [
         "sap",
@@ -545,6 +593,28 @@
       "controller",
       "tax manager",
       "audit"
+    ]
+  },
+  "regulated_domain_gate": {
+    "_comment": "The body-text half of the lane discipline (2026-08-18). Catches what a title cannot: a posting titled neutrally ('Sr Manager, ERP Deployment') whose actual must-have is compliance-SME work in a regulated domain Dan has never worked in. Applied AFTER enrich_details() because it reads the job description, not the title. Roles gated here are NOT written to seen.json - unlike comp and travel, this is a scoring judgement on rules still being tuned, so a gated role must resurface if the rule is loosened.",
+    "_far_comment": "acronyms are matched CASE-SENSITIVELY and phrases case-insensitively. This matters enormously for FAR: a case-insensitive word match would hit the ordinary English 'far' in almost every job description ever written and gate the entire feed.",
+    "penalty": -4.0,
+    "min_hits": 2,
+    "acronyms": [
+      "FAR",
+      "DFARS",
+      "ITAR",
+      "NPMA",
+      "CPPM",
+      "CPPS",
+      "CPPA"
+    ],
+    "phrases": [
+      "government property",
+      "government contractor property",
+      "government-furnished",
+      "federal acquisition regulation",
+      "defense federal acquisition"
     ]
   },
   "employer_penalties": {

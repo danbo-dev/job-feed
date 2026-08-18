@@ -473,8 +473,25 @@ def score(job, cfg):
 
     path = cfg["paths"][path_id]
     hits = [s for s in path["title_signals"] if has_word(s, title)]
+    # Set when the role is in the right path but the wrong lane of it. Suppresses
+    # the résumé-proof bonus too: "proven on résumé: sap" is actively misleading on
+    # an SAP role whose real subject is payroll or government property.
+    off_lane = None
     if hits:
-        pts += 4 * path["weight"]
+        weight = path["weight"]
+        lane = path.get("lane")
+        if lane:
+            in_lane = any(has_word(t, title) for t in lane["in_lane_terms"])
+            tower = next((t for t in lane["off_lane_towers"] if has_word(t, title)), None)
+            # Both conditions matter. A named off-lane tower is only damning when
+            # nothing in Dan's lane appears alongside it — "SAP Warehouse & Finance
+            # Integration" is a real fit; "SAP Payroll Transformation" is not.
+            if tower and not in_lane:
+                off_lane = tower
+                weight *= lane.get("off_lane_weight_factor", 1.0)
+                pts += lane["off_lane_penalty"]
+                why.append(f"off-lane SAP tower: {tower}")
+        pts += 4 * weight
         why.append(f"{path['label']} — “{hits[0].strip()}”")
     else:
         # No title signal, so the path came from the employer fallback in
@@ -548,11 +565,58 @@ def score(job, cfg):
              "release", "product owner", "backlog", "uat", "governance",
              "logistics", "distribution"]
     proof_hits = [p for p in proof if has_word(p, title)]
-    if proof_hits:
+    if proof_hits and not off_lane:
         pts += 1.5
         why.append(f"proven on résumé: {proof_hits[0]}")
 
     return round(pts, 1), why
+
+
+# Case-sensitivity is the whole trick here. "FAR" as a case-insensitive word match
+# hits the ordinary English "far" in nearly every job description written, which
+# would gate the entire feed; as an uppercase acronym it is precise.
+def regulated_domain_hits(text, gate):
+    if not text:
+        return []
+    found = []
+    for a in gate.get("acronyms", []):
+        if re.search(rf"\b{re.escape(a)}\b", text):  # NOT re.I - see above
+            found.append(a)
+    for p in gate.get("phrases", []):
+        if re.search(rf"\b{re.escape(p)}\b", text, re.I):
+            found.append(p)
+    return found
+
+
+def apply_domain_gates(jobs, cfg, stats):
+    """Re-score against the job description; drop compliance-SME roles.
+
+    The title layer catches an off-lane SAP tower by name. This catches what it
+    cannot: a neutrally-titled ERP role whose actual must-have is subject-matter
+    expertise in a regulated domain Dan has never worked in. The RTX property-
+    management posting is the canonical case — dense in his real keywords, gated
+    behind FAR/DFARS government-property experience he does not have.
+
+    Requires min_hits distinct terms so a single passing mention of ITAR in an
+    otherwise general program role does not gate it.
+    """
+    gate = cfg.get("regulated_domain_gate")
+    if not gate:
+        return jobs
+    floor_score = cfg["report"]["min_score_to_report"]
+    kept = []
+    for j in jobs:
+        found = regulated_domain_hits(j.get("body_text", ""), gate)
+        if len(found) >= gate.get("min_hits", 2):
+            j["score"] = round(j["score"] + gate["penalty"], 1)
+            j["why"] = list(j.get("why", [])) + [
+                f"regulated-domain SME gate: {', '.join(sorted(set(found))[:3])}"]
+            if j["score"] < floor_score:
+                j["dropped_by"] = "domain_gate"
+                stats["dropped_domain"] += 1
+                continue
+        kept.append(j)
+    return kept
 
 
 # "a year" belongs here: LinkedIn renders Greenhouse/Lever ranges as
@@ -678,6 +742,7 @@ def enrich_details(jobs, cfg, limit):
         text = strip_page_chrome(
             re.sub(r"\s+", " ", BeautifulSoup(html, "html.parser").get_text(" ")))
         job["read"] = True
+        job["body_text"] = text[:40000]
         lo, hi = extract_salary(text)
         if lo:
             job["salary_lo"], job["salary_hi"] = lo, hi
@@ -811,6 +876,14 @@ def write_report(jobs, cfg, first_run, stats):
                      f"{stats['dropped_travel']} exceeded your "
                      f"{cfg['candidate']['max_travel_pct']}% travel ceiling. "
                      f"Loosen these in `config.candidate.hard_filters`.</sub>")
+        lines.append("")
+    if stats.get("dropped_domain"):
+        lines.append(f"<sub>**{stats['dropped_domain']} role(s) were cut on domain fit** — "
+                     f"they read as strong matches on keywords (SAP, ERP, transformation, "
+                     f"UAT) but are anchored to a specialist domain outside your lane, such "
+                     f"as an off-lane SAP tower or a FAR/DFARS compliance-SME requirement. "
+                     f"These are not recorded as settled and will be re-judged if the rule "
+                     f"changes.</sub>")
         lines.append("")
     if stats.get("kept_no_comp"):
         exempt_at = cfg["candidate"]["hard_filters"].get("no_comp_score_exemption")
@@ -971,7 +1044,8 @@ def main():
              "degraded": len(raw) == 0 and len(board_jobs) > 0,
              "dropped_loc": 0, "dropped_sen": 0, "dropped_seen": 0,
              "dropped_no_comp": 0, "dropped_below_floor": 0, "dropped_travel": 0,
-             "dropped_unread": 0, "kept_no_comp": 0, "filters_skipped": False}
+             "dropped_unread": 0, "kept_no_comp": 0, "dropped_domain": 0,
+             "filters_skipped": False}
 
     kept, keys = [], set()
     for j in raw_all:
@@ -1004,10 +1078,14 @@ def main():
     if not args.no_salary and kept:
         log("Enriching salary + travel for top matches...")
         enrich_details(kept, cfg, cfg["report"]["enrich_salary_for_top_n"])
+        # Before the hard filters: a role gated on domain should never spend a
+        # comp verdict, because a domain gate is not recorded in seen.json.
+        kept = apply_domain_gates(kept, cfg, stats)
         kept = apply_hard_filters(kept, cfg, stats)
         kept.sort(key=lambda x: -x["score"])
-        log(f"{len(kept)} cleared the hard filters "
-            f"({stats['dropped_no_comp']} no comp posted, "
+        log(f"{len(kept)} cleared the filters "
+            f"({stats['dropped_domain']} off-lane/regulated domain, "
+            f"{stats['dropped_no_comp']} no comp posted, "
             f"{stats['dropped_below_floor']} under floor, "
             f"{stats['dropped_travel']} over travel ceiling, "
             f"{stats['dropped_unread']} unread - held for next run)")

@@ -131,6 +131,56 @@ Two non-obvious properties, both load-bearing:
   `company_path_fallback` exists. `domain_bonus` can't do that job — it only applies
   *after* a path is assigned.
 
+### SAP lane discipline — the RTX regression (2026-08-18)
+
+**The case.** RTX "Sr. Manager SAP Property Management Transformation (Remote)" scored
+**9.0**. Honest assessment: **3 — pass.** The posting is legitimately dense in Dan's real
+keywords — Sr Manager, SAP, S/4HANA, ERP transformation, UAT, change management,
+warehousing, inventory, remote, 10+ years, US citizenship — and he'd ace the
+transformation half. But the **core must-have is government-property / FAR-DFARS
+subject-matter expertise**, and he'd be "the primary SME for government property" in a
+domain he has never worked. Commercial CPG, not defense contracting. Task overlap was a
+mirage; the domain gate was the reality.
+
+It was not one bad role. Off-lane SAP towers were **outscoring in-lane ones**:
+
+| Title | Before | After |
+|---|---|---|
+| SAP Finance Transformation Director | 9.5 | 3.0 |
+| Sr. Manager SAP Property Management Transformation | 9.0 | **2.5** |
+| SAP Payroll Transformation Manager | 9.0 | 1.5 |
+| *SAP Deployment Manager, S/4HANA Site Readiness* | *8.0* | *8.0* |
+| *SAP Program Manager* | *8.0* | *8.0* |
+
+Two layers, because neither catches the other's cases:
+
+1. **Title layer** (`paths.sap_erp.lane`) — an off-lane SAP tower named in the title
+   (`property management`, `payroll`, `HCM`, `FICO`, `finance`, `real estate`, `Ariba`,
+   `SuccessFactors`…) with **no in-lane term alongside it** takes −3.0, has its path
+   credit halved, and loses the résumé-proof bonus. That last part matters: "proven on
+   résumé: sap" is actively misleading on a role whose real subject is payroll.
+2. **Body layer** (`regulated_domain_gate`, in `apply_domain_gates()`) — runs *after*
+   `enrich_details()` because it reads the description. Catches the neutrally-titled
+   role the title layer cannot: "Sr Manager, ERP Deployment" scoring 9.0 on its title,
+   whose body is FAR/DFARS compliance SME, drops to 5.0 and out.
+
+**Deliberate deviation from the writeup.** Its recommendation #3 was to grant SAP credit
+*only* on in-lane co-occurrence. Applied literally that guts **"SAP Program Manager"** —
+Dan's own former title, which contains no in-lane term either — from 8.0 to 4.5. So the
+penalty fires only when an off-lane tower is *named*; neutral SAP titles keep full credit
+and are policed at the body layer instead. `LANE_CASES` asserts both directions.
+
+**`FAR` is matched case-SENSITIVELY.** This is the single most important detail in the
+gate. Matched case-insensitively as a word, it hits the ordinary English "far" in nearly
+every job description ever written and would gate the entire feed. `min_hits: 2` likewise
+stops one passing ITAR mention from gating a general program role. Both are asserted in
+`GATE_CASES`.
+
+**Domain-gated roles are NOT written to `seen.json`.** Unlike comp and travel — settled
+facts about a posting — this is a scoring judgement on rules still being tuned, so a
+gated role must resurface if the rule is loosened. It costs a re-fetch; that is the right
+trade while the gate is young.
+
 ### Level band — Director is the ceiling, not the floor (2026-08-17)
 
 The first email led with **"Senior Director, Product Management"** (11.4) and **"Senior
